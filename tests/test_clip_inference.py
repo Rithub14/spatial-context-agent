@@ -1,6 +1,5 @@
 """Tests for CLIPInference — CLIP model is mocked to avoid slow loading."""
 
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,7 +7,6 @@ import torch
 from PIL import Image
 
 from src.pipeline.clip_inference import CLIPInference
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,13 +29,22 @@ def _make_clip_mocks(num_categories: int = 5) -> tuple[MagicMock, MagicMock]:
     return mock_model, mock_preprocess
 
 
+def _tokenize_patch(num_categories: int):
+    """Return a patch for clip.tokenize producing a (N, 77) token tensor."""
+    tokens = torch.zeros(num_categories, 77, dtype=torch.long)
+    return patch("src.pipeline.clip_inference.clip.tokenize", return_value=tokens)
+
+
 @pytest.fixture
 def clip_inference(scene_categories: list[str]) -> CLIPInference:
     """CLIPInference with the CLIP library patched out."""
     mock_model, mock_preprocess = _make_clip_mocks(len(scene_categories))
     with (
-        patch("src.pipeline.clip_inference.clip.load", return_value=(mock_model, mock_preprocess)),
-        patch("src.pipeline.clip_inference.clip.tokenize", return_value=torch.zeros(len(scene_categories), 77, dtype=torch.long)),
+        patch(
+            "src.pipeline.clip_inference.clip.load",
+            return_value=(mock_model, mock_preprocess),
+        ),
+        _tokenize_patch(len(scene_categories)),
     ):
         instance = CLIPInference()
     # Attach mocks so individual tests can inspect calls
@@ -60,7 +67,7 @@ def test_classify_scene_returns_list_of_dicts(
     scene_categories: list[str],
 ) -> None:
     """classify_scene must return a list of dicts with 'category' and 'confidence'."""
-    with patch("src.pipeline.clip_inference.clip.tokenize", return_value=torch.zeros(len(scene_categories), 77, dtype=torch.long)):
+    with _tokenize_patch(len(scene_categories)):
         results = clip_inference.classify_scene(sample_image, scene_categories)
 
     assert isinstance(results, list)
@@ -78,7 +85,7 @@ def test_classify_scene_confidence_sums_to_one(
     scene_categories: list[str],
 ) -> None:
     """Confidence values for all top-k results must sum to ≈1 when top_k == len(categories)."""
-    with patch("src.pipeline.clip_inference.clip.tokenize", return_value=torch.zeros(len(scene_categories), 77, dtype=torch.long)):
+    with _tokenize_patch(len(scene_categories)):
         results = clip_inference.classify_scene(
             sample_image, scene_categories, top_k=len(scene_categories)
         )
@@ -93,7 +100,7 @@ def test_classify_scene_top_k_limits_results(
     scene_categories: list[str],
 ) -> None:
     """classify_scene must return exactly top_k items when top_k < len(categories)."""
-    with patch("src.pipeline.clip_inference.clip.tokenize", return_value=torch.zeros(len(scene_categories), 77, dtype=torch.long)):
+    with _tokenize_patch(len(scene_categories)):
         results = clip_inference.classify_scene(sample_image, scene_categories, top_k=2)
 
     assert len(results) == 2
@@ -105,7 +112,7 @@ def test_classify_scene_top_k_clamped_to_category_count(
     scene_categories: list[str],
 ) -> None:
     """Requesting more results than categories must not raise an error."""
-    with patch("src.pipeline.clip_inference.clip.tokenize", return_value=torch.zeros(len(scene_categories), 77, dtype=torch.long)):
+    with _tokenize_patch(len(scene_categories)):
         results = clip_inference.classify_scene(
             sample_image, scene_categories, top_k=999
         )
@@ -119,7 +126,7 @@ def test_classify_scene_results_sorted_descending(
     scene_categories: list[str],
 ) -> None:
     """Results must be ordered from highest to lowest confidence."""
-    with patch("src.pipeline.clip_inference.clip.tokenize", return_value=torch.zeros(len(scene_categories), 77, dtype=torch.long)):
+    with _tokenize_patch(len(scene_categories)):
         results = clip_inference.classify_scene(
             sample_image, scene_categories, top_k=len(scene_categories)
         )

@@ -7,7 +7,6 @@ from PIL import Image
 
 from src.pipeline.scene_classifier import SceneClassifier
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -27,6 +26,14 @@ def _mock_clip(results: list[dict]) -> MagicMock:
     return mock
 
 
+def _patch_clip(results: list[dict]):
+    """Patch CLIPInference in scene_classifier with a mock returning `results`."""
+    return patch(
+        "src.pipeline.scene_classifier.CLIPInference",
+        return_value=_mock_clip(results),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -38,7 +45,7 @@ def test_classify_returns_primary_and_alternatives(sample_image: Image.Image) ->
         {"category": "historic building", "confidence": 0.25},
         {"category": "plaza or square", "confidence": 0.15},
     ]
-    with patch("src.pipeline.scene_classifier.CLIPInference", return_value=_mock_clip(mock_results)):
+    with _patch_clip(mock_results):
         result = SceneClassifier().classify(sample_image, top_k=3)
 
     assert "primary" in result
@@ -52,7 +59,7 @@ def test_primary_has_highest_confidence(sample_image: Image.Image) -> None:
         {"category": "waterfront", "confidence": 0.20},
         {"category": "park or garden", "confidence": 0.10},
     ]
-    with patch("src.pipeline.scene_classifier.CLIPInference", return_value=_mock_clip(mock_results)):
+    with _patch_clip(mock_results):
         result = SceneClassifier().classify(sample_image, top_k=3)
 
     primary_conf = result["primary"]["confidence"]
@@ -67,7 +74,7 @@ def test_alternatives_count_matches_top_k_minus_one(sample_image: Image.Image) -
         {"category": "church or cathedral", "confidence": 0.30},
         {"category": "memorial", "confidence": 0.20},
     ]
-    with patch("src.pipeline.scene_classifier.CLIPInference", return_value=_mock_clip(mock_results)):
+    with _patch_clip(mock_results):
         result = SceneClassifier().classify(sample_image, top_k=3)
 
     assert len(result["alternatives"]) == 2
@@ -75,8 +82,7 @@ def test_alternatives_count_matches_top_k_minus_one(sample_image: Image.Image) -
 
 def test_top_k_one_returns_empty_alternatives(sample_image: Image.Image) -> None:
     """When top_k=1, alternatives must be an empty list."""
-    mock_results = [{"category": "monument", "confidence": 1.0}]
-    with patch("src.pipeline.scene_classifier.CLIPInference", return_value=_mock_clip(mock_results)):
+    with _patch_clip([{"category": "monument", "confidence": 1.0}]):
         result = SceneClassifier().classify(sample_image, top_k=1)
 
     assert result["alternatives"] == []
@@ -84,8 +90,7 @@ def test_top_k_one_returns_empty_alternatives(sample_image: Image.Image) -> None
 
 def test_primary_structure(sample_image: Image.Image) -> None:
     """primary must be a dict with 'category' (str) and 'confidence' (float) keys."""
-    mock_results = [{"category": "waterfront", "confidence": 0.80}]
-    with patch("src.pipeline.scene_classifier.CLIPInference", return_value=_mock_clip(mock_results)):
+    with _patch_clip([{"category": "waterfront", "confidence": 0.80}]):
         result = SceneClassifier().classify(sample_image, top_k=1)
 
     primary = result["primary"]
@@ -95,10 +100,12 @@ def test_primary_structure(sample_image: Image.Image) -> None:
 
 def test_singleton_clip_model_loaded_once(sample_image: Image.Image) -> None:
     """CLIPInference must be instantiated only once across multiple classify calls."""
-    mock_results = [{"category": "monument", "confidence": 1.0}]
-    mock_clip_instance = _mock_clip(mock_results)
+    mock_clip_instance = _mock_clip([{"category": "monument", "confidence": 1.0}])
 
-    with patch("src.pipeline.scene_classifier.CLIPInference", return_value=mock_clip_instance) as mock_cls:
+    with patch(
+        "src.pipeline.scene_classifier.CLIPInference",
+        return_value=mock_clip_instance,
+    ) as mock_cls:
         classifier = SceneClassifier()
         classifier.classify(sample_image, top_k=1)
         classifier.classify(sample_image, top_k=1)
