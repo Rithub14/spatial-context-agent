@@ -21,6 +21,8 @@ def _make_clip_mocks(num_categories: int = 5) -> tuple[MagicMock, MagicMock]:
     text_feat = torch.ones(num_categories, 512)
     mock_model.encode_image.return_value = image_feat
     mock_model.encode_text.return_value = text_feat
+    # logit_scale must be a real tensor — MagicMock breaks tensor arithmetic
+    mock_model.logit_scale = torch.tensor(4.6052)  # ln(100), CLIP's default
 
     mock_preprocess = MagicMock()
     # preprocess(image) should return a tensor that supports .unsqueeze(0)
