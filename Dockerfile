@@ -3,10 +3,11 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Install system deps needed for psycopg2 and Pillow
+# Install system deps needed for psycopg2, Pillow, and CLIP (git install)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
