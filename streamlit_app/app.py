@@ -61,7 +61,7 @@ if uploaded_file:
     col_img, col_meta = st.columns([1, 1])
 
     with col_img:
-        st.image(image, caption="Uploaded image", use_container_width=True)
+        st.image(image, caption="Uploaded image", use_column_width=True)
 
     # --- Try to extract EXIF GPS for display ---
     exif_lat, exif_lng = None, None
@@ -113,7 +113,7 @@ if uploaded_file:
 
     # --- Analyze button ---
     st.divider()
-    analyze_clicked = st.button("🔍 Analyze", type="primary", use_container_width=True)
+    analyze_clicked = st.button("🔍 Analyze", type="primary")
 
     if analyze_clicked:
         # Encode image to base64
@@ -215,7 +215,7 @@ else:
             items = r.json().get("items", [])
             if items:
                 df = pd.DataFrame(items)[["name", "district", "category", "latitude", "longitude"]]
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df)
                 st.map(
                     pd.DataFrame({"lat": [i["latitude"] for i in items],
                                   "lon": [i["longitude"] for i in items]}),

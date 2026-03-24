@@ -20,7 +20,6 @@ from src.pipeline.scene_classifier import SceneClassifier
 
 def create_test_image() -> Image.Image:
     """Create a simple gradient image as a stand-in test input."""
-    import struct
     import urllib.request
 
     url = "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Brandenburger_Tor_abends.jpg/320px-Brandenburger_Tor_abends.jpg"
