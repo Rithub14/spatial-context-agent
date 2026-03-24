@@ -13,3 +13,18 @@ class AnalyzeRequest(BaseModel):
     max_narration_length: int = Field(
         200, ge=50, le=1000, description="Maximum narration length in characters."
     )
+
+
+class LandmarkCreateRequest(BaseModel):
+    """Request body for POST /api/v1/locations."""
+
+    name: str = Field(..., max_length=255)
+    description: str
+    latitude: float
+    longitude: float
+    city: str = Field("Berlin", max_length=100)
+    district: str = Field(..., max_length=100)
+    category: str = Field(..., max_length=100)
+    historical_period: str | None = Field(None, max_length=100)
+    narration_template: str
+    image_url: str | None = Field(None, max_length=500)

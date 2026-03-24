@@ -7,54 +7,9 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from src.api.main import app
-from src.db.models import Base
-from src.db.session import get_db
-
-# ---------------------------------------------------------------------------
-# Test DB (SQLite in-memory, StaticPool so all connections share one database)
-# ---------------------------------------------------------------------------
-
-TEST_ENGINE = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=TEST_ENGINE)
-
-
-def override_get_db():
-    """Override DB dependency with in-memory SQLite."""
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-@pytest.fixture(autouse=True)
-def setup_test_db():
-    """Create tables before each test, drop after."""
-    Base.metadata.create_all(bind=TEST_ENGINE)
-    yield
-    Base.metadata.drop_all(bind=TEST_ENGINE)
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-# Patch functions that reference the PostgreSQL engine directly.
-# Must patch at the *importing* module's namespace, not the source module.
-_patches = [
-    patch("src.api.main.create_tables"),                        # called in lifespan
-    patch("src.api.routes.health.check_db_connection", return_value=True),  # health endpoint
-]
-for p in _patches:
-    p.start()
-
+from tests.conftest import TestingSessionLocal
 
 # ---------------------------------------------------------------------------
 # Fixtures

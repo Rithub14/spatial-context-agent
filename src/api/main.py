@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.middleware.auth import APIKeyMiddleware
+from src.api.middleware.rate_limiter import RateLimitMiddleware
 from src.api.routes import agent, health
 from src.db.session import create_tables
 from src.pipeline.scene_classifier import SceneClassifier
@@ -42,6 +44,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(APIKeyMiddleware)
 
 app.include_router(health.router)
 app.include_router(agent.router)

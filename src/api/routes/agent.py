@@ -4,19 +4,21 @@ import base64
 import io
 import logging
 import time
+import uuid as _uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from PIL import Image
 from sqlalchemy.orm import Session
 
-from src.api.schemas.request import AnalyzeRequest
+from src.api.schemas.request import AnalyzeRequest, LandmarkCreateRequest
 from src.api.schemas.response import AnalyzeResponse, LocationResult, SceneResult
 from src.config import settings
-from src.db.models import InferenceLog
+from src.db.models import InferenceLog, Landmark
 from src.db.session import get_db
 from src.pipeline.context_retriever import ContextRetriever
 from src.pipeline.location_extractor import LocationExtractor
+from src.pipeline.narration_engine import NarrationEngine
 from src.pipeline.scene_classifier import SceneClassifier
 
 logger = logging.getLogger(__name__)
@@ -75,13 +77,22 @@ def analyze(
     landmark = retriever.find_nearest_landmark(lat, lng)
 
     # --- Narration ---
-    narration = _build_narration(scene_result, landmark, request.max_narration_length)
+    narration = NarrationEngine().generate(
+        scene_result, landmark, (lat, lng), request.max_narration_length
+    )
 
     # --- Inference time ---
     inference_ms = int((time.perf_counter() - t_start) * 1000)
 
     # --- Log to DB ---
     _log_inference(db, lat, lng, primary, inference_ms, landmark)
+
+    logger.info(
+        "analyze lat=%.4f lng=%.4f scene=%s landmark=%s inference_ms=%d",
+        lat, lng, primary["category"],
+        landmark["name"] if landmark else "none",
+        inference_ms,
+    )
 
     return AnalyzeResponse(
         scene=SceneResult(
@@ -112,8 +123,6 @@ def list_locations(
     offset: int = 0,
 ) -> dict:
     """List all landmarks with pagination."""
-    from src.db.models import Landmark
-
     total = db.query(Landmark).count()
     landmarks = db.query(Landmark).offset(offset).limit(limit).all()
     return {
@@ -134,33 +143,34 @@ def list_locations(
     }
 
 
+@router.post("/locations", status_code=201)
+def create_location(
+    body: LandmarkCreateRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    """Add a new landmark to the database."""
+    lm = Landmark(
+        name=body.name,
+        description=body.description,
+        latitude=body.latitude,
+        longitude=body.longitude,
+        city=body.city,
+        district=body.district,
+        category=body.category,
+        historical_period=body.historical_period,
+        narration_template=body.narration_template,
+        image_url=body.image_url,
+    )
+    db.add(lm)
+    db.commit()
+    db.refresh(lm)
+    logger.info("Created landmark %r (id=%s)", lm.name, lm.id)
+    return {"id": str(lm.id), "name": lm.name}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _build_narration(
-    scene_result: dict,
-    landmark: dict | None,
-    max_length: int,
-) -> str:
-    """Build tour guide narration from scene + landmark data."""
-    scene_type = scene_result["primary"]["category"]
-
-    if landmark:
-        intro = f"I can see you're looking at a {scene_type}. "
-        body = landmark["narration_template"]
-        period = landmark.get("historical_period", "")
-        suffix = f" ({period})" if period else ""
-        narration = intro + body + suffix
-    else:
-        narration = (
-            f"You appear to be looking at a {scene_type}. "
-            "This location doesn't match a known landmark in our database, "
-            "but the scene classification suggests an interesting urban environment."
-        )
-
-    return narration[:max_length]
-
 
 def _log_inference(
     db: Session,
@@ -171,8 +181,6 @@ def _log_inference(
     landmark: dict | None,
 ) -> None:
     """Write an inference log entry to the database."""
-    import uuid as _uuid
-
     try:
         log = InferenceLog(
             latitude=lat,
