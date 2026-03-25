@@ -28,6 +28,17 @@ with st.sidebar:
     api_key = st.text_input("API Key (optional)", value="", type="password")
     st.caption("Leave API key blank if ENABLE_AUTH=false.")
     st.divider()
+    persona = st.selectbox(
+        "Tour Guide Persona",
+        ["historian", "storyteller", "local", "child_friendly"],
+        format_func=lambda x: {
+            "historian": "🏛️ Historian",
+            "storyteller": "📖 Storyteller",
+            "local": "🍺 Local",
+            "child_friendly": "🧒 Child Friendly",
+        }[x],
+    )
+    st.divider()
     st.markdown("**About**")
     st.caption(
         "Spatial Context Agent combines CLIP zero-shot vision with "
@@ -94,15 +105,17 @@ if uploaded_file:
             st.map(pd.DataFrame({"lat": [exif_lat], "lon": [exif_lng]}), zoom=13)
 
         st.markdown("**Override / enter GPS manually**")
+        if exif_lat is None:
+            st.warning("No EXIF GPS found — enter coordinates below.")
         manual_lat = st.number_input(
             "Latitude",
-            value=exif_lat if exif_lat else 52.5163,
+            value=exif_lat if exif_lat else 0.0,
             format="%.6f",
             step=0.0001,
         )
         manual_lng = st.number_input(
             "Longitude",
-            value=exif_lng if exif_lng else 13.3777,
+            value=exif_lng if exif_lng else 0.0,
             format="%.6f",
             step=0.0001,
         )
@@ -121,7 +134,7 @@ if uploaded_file:
         image.save(buf, format="JPEG")
         b64_image = base64.b64encode(buf.getvalue()).decode()
 
-        payload: dict = {"image": b64_image}
+        payload: dict = {"image": b64_image, "persona": persona}
         if use_manual or (exif_lat is None):
             payload["latitude"] = manual_lat
             payload["longitude"] = manual_lng

@@ -13,6 +13,11 @@ class AnalyzeRequest(BaseModel):
     max_narration_length: int = Field(
         200, ge=50, le=1000, description="Maximum narration length in characters."
     )
+    persona: str = Field(
+        "historian",
+        description="Tour guide persona: historian | storyteller | local | child_friendly.",
+    )
+    session_id: str | None = Field(None, description="Session ID for conversation continuity.")
 
 
 class LandmarkCreateRequest(BaseModel):

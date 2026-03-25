@@ -19,6 +19,7 @@ from src.db.session import get_db
 from src.pipeline.context_retriever import ContextRetriever
 from src.pipeline.location_extractor import LocationExtractor
 from src.pipeline.narration_engine import NarrationEngine
+from src.pipeline.rag_retriever import RAGRetriever
 from src.pipeline.scene_classifier import SceneClassifier
 
 logger = logging.getLogger(__name__)
@@ -76,9 +77,27 @@ def analyze(
     retriever = ContextRetriever(db)
     landmark = retriever.find_nearest_landmark(lat, lng)
 
+    # --- RAG context retrieval ---
+    context_chunks: list[str] = []
+    if landmark:
+        try:
+            rag = RAGRetriever(db)
+            context_chunks = rag.retrieve(
+                query=f"{landmark['name']} {scene_result['primary']['category']}",
+                landmark_id=landmark["id"],
+                top_k=3,
+            )
+        except Exception as exc:
+            logger.warning("RAG retrieval failed, continuing without context: %s", exc)
+
     # --- Narration ---
     narration = NarrationEngine().generate(
-        scene_result, landmark, (lat, lng), request.max_narration_length
+        scene_result,
+        landmark,
+        (lat, lng),
+        request.max_narration_length,
+        persona=request.persona,
+        context_chunks=context_chunks,
     )
 
     # --- Inference time ---
@@ -112,6 +131,8 @@ def analyze(
             "inference_time_ms": inference_ms,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "coordinates": {"latitude": lat, "longitude": lng},
+            "persona": request.persona,
+            "rag_chunks_used": len(context_chunks),
         },
     )
 
