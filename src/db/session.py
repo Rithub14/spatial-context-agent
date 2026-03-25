@@ -2,6 +2,7 @@
 
 import logging
 
+from pgvector.sqlalchemy import Vector  # noqa: F401 — registers vector type with SQLAlchemy
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 

@@ -3,6 +3,7 @@
 import uuid
 from datetime import UTC, datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -81,3 +82,27 @@ class InferenceLog(Base):
 
     def __repr__(self) -> str:
         return f"<InferenceLog {self.predicted_scene!r} @ ({self.latitude}, {self.longitude})>"
+
+
+class LandmarkChunk(Base):
+    """A text chunk from a landmark's knowledge base, stored with its embedding."""
+
+    __tablename__ = "landmark_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    landmark_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("landmarks.id"), nullable=False
+    )
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list] = mapped_column(Vector(384), nullable=False)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="db")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    landmark: Mapped["Landmark"] = relationship("Landmark")
+
+    def __repr__(self) -> str:
+        return f"<LandmarkChunk landmark_id={self.landmark_id} source={self.source!r}>"
