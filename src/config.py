@@ -29,5 +29,11 @@ class Settings(BaseSettings):
     azure_resource_group: str = "spatial-agent-rg"
     azure_location: str = "westeurope"
 
+    # Agentic system
+    anthropic_api_key: str = ""
+    claude_model: str = "claude-haiku-4-5-20251001"
+    embedding_model: str = "all-MiniLM-L6-v2"
+    default_persona: str = "historian"
+
 
 settings = Settings()

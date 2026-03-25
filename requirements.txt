@@ -11,6 +11,15 @@ python-multipart
 httpx
 alembic
 
+# Agentic system
+langchain
+langchain-anthropic
+langchain-community
+anthropic
+pgvector
+sentence-transformers
+wikipedia-api
+
 # Dev / test
 pytest
 pytest-asyncio
