@@ -106,3 +106,49 @@ class LandmarkChunk(Base):
 
     def __repr__(self) -> str:
         return f"<LandmarkChunk landmark_id={self.landmark_id} source={self.source!r}>"
+
+
+class UserSession(Base):
+    """A tour session for a user — tracks visited landmarks and persona."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    persona: Mapped[str] = mapped_column(String(50), nullable=False, default="historian")
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="en")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    turns: Mapped[list["ConversationTurn"]] = relationship(
+        "ConversationTurn", back_populates="session", order_by="ConversationTurn.created_at"
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserSession {self.id} persona={self.persona!r}>"
+
+
+class ConversationTurn(Base):
+    """A single message turn in a user session."""
+
+    __tablename__ = "conversation_turns"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("user_sessions.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # "user" | "assistant"
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    landmark_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    session: Mapped["UserSession"] = relationship("UserSession", back_populates="turns")
+
+    def __repr__(self) -> str:
+        return f"<ConversationTurn session={self.session_id} role={self.role!r}>"
