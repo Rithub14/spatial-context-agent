@@ -15,6 +15,7 @@ alembic
 langchain
 langchain-openai
 langchain-community
+langgraph
 openai
 pgvector
 sentence-transformers

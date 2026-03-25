@@ -1,4 +1,4 @@
-"""Analyze endpoint — core spatial context pipeline."""
+"""Analyze endpoint — core spatial context pipeline + LangGraph agentic endpoint."""
 
 import base64
 import io
@@ -9,6 +9,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from PIL import Image
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.api.schemas.request import AnalyzeRequest, LandmarkCreateRequest
@@ -26,6 +27,175 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
 
 _classifier = SceneClassifier()
+
+# In-memory session trace store (session_id → step_trace list)
+_session_traces: dict[str, list[str]] = {}
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models for agentic endpoints
+# ---------------------------------------------------------------------------
+
+class AgentAnalyzeRequest(BaseModel):
+    """Request for the LangGraph agentic analyze endpoint."""
+
+    image: str
+    latitude: float | None = None
+    longitude: float | None = None
+    persona: str = "historian"
+    session_id: str | None = None
+
+
+class FollowupRequest(BaseModel):
+    """Request for conversational follow-up questions."""
+
+    session_id: str
+    question: str
+    persona: str = "historian"
+
+
+# ---------------------------------------------------------------------------
+# LangGraph agentic endpoint
+# ---------------------------------------------------------------------------
+
+@router.post("/agent/analyze")
+def agent_analyze(request: AgentAnalyzeRequest) -> dict:
+    """Run the full LangGraph multi-agent pipeline on an image + location.
+
+    Returns narration, scene result, landmark, step trace, and session_id.
+    """
+    from src.agent.graph import get_graph
+
+    t_start = time.perf_counter()
+
+    # Resolve GPS
+    try:
+        image_bytes = base64.b64decode(request.image)
+        raw_image = Image.open(io.BytesIO(image_bytes))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image data.")
+
+    lat = request.latitude
+    lng = request.longitude
+    if lat is None or lng is None:
+        coords = LocationExtractor.extract_gps(raw_image)
+        if coords:
+            lat, lng = coords
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="No GPS data. Provide latitude/longitude or an image with EXIF GPS.",
+            )
+
+    session_id = request.session_id or str(_uuid.uuid4())
+
+    state = {
+        "image_b64": request.image,
+        "latitude": lat,
+        "longitude": lng,
+        "persona": request.persona,
+        "session_id": session_id,
+        "conversation_history": _get_session_history(session_id),
+        "scene_result": {},
+        "landmark": {},
+        "knowledge_chunks": "",
+        "nearby_places": "",
+        "narration": "",
+        "step_trace": [],
+    }
+
+    result = get_graph().invoke(state)
+    inference_ms = int((time.perf_counter() - t_start) * 1000)
+
+    # Persist trace and conversation turn
+    _session_traces[session_id] = result["step_trace"]
+    _add_session_turn(session_id, "assistant", result["narration"],
+                      result.get("landmark", {}).get("name"))
+
+    landmark = result.get("landmark", {})
+    return {
+        "session_id": session_id,
+        "narration": result["narration"],
+        "scene": result["scene_result"],
+        "location": {
+            "nearest_landmark": landmark.get("name") if landmark.get("found") else None,
+            "distance_meters": landmark.get("distance_meters"),
+            "district": landmark.get("district"),
+            "city": landmark.get("city"),
+        },
+        "step_trace": result["step_trace"],
+        "metadata": {
+            "model_version": settings.clip_model_name,
+            "inference_time_ms": inference_ms,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "coordinates": {"latitude": lat, "longitude": lng},
+            "persona": request.persona,
+        },
+    }
+
+
+@router.post("/agent/followup")
+def agent_followup(request: FollowupRequest) -> dict:
+    """Answer a follow-up question using conversation history (no image needed)."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_openai import ChatOpenAI
+
+    from src.pipeline.narration_engine import PERSONA_PROMPTS
+
+    history = _get_session_history(request.session_id)
+    if not history:
+        raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+    system_prompt = PERSONA_PROMPTS.get(request.persona, PERSONA_PROMPTS["historian"])
+    system_prompt += " Answer the user's follow-up question concisely."
+
+    messages: list = [SystemMessage(content=system_prompt)]
+    for turn in history[-6:]:
+        if turn["role"] == "user":
+            messages.append(HumanMessage(content=turn["content"]))
+        else:
+            from langchain_core.messages import AIMessage
+            messages.append(AIMessage(content=turn["content"]))
+    messages.append(HumanMessage(content=request.question))
+
+    if settings.openai_api_key:
+        llm = ChatOpenAI(model=settings.gpt_model, api_key=settings.openai_api_key,
+                         max_tokens=300)
+        answer = llm.invoke(messages).content
+    else:
+        answer = "OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file."
+
+    _add_session_turn(request.session_id, "user", request.question)
+    _add_session_turn(request.session_id, "assistant", answer)
+
+    return {"session_id": request.session_id, "answer": answer}
+
+
+@router.get("/agent/trace/{session_id}")
+def get_trace(session_id: str) -> dict:
+    """Return the step trace for a given session (agent thinking steps)."""
+    trace = _session_traces.get(session_id, [])
+    return {"session_id": session_id, "step_trace": trace}
+
+
+# ---------------------------------------------------------------------------
+# Session helpers (in-memory, replaced by DB in Day 10)
+# ---------------------------------------------------------------------------
+
+_session_history: dict[str, list[dict]] = {}
+
+
+def _get_session_history(session_id: str) -> list[dict]:
+    return _session_history.get(session_id, [])
+
+
+def _add_session_turn(session_id: str, role: str, content: str,
+                      landmark_name: str | None = None) -> None:
+    if session_id not in _session_history:
+        _session_history[session_id] = []
+    _session_history[session_id].append({
+        "role": role, "content": content, "landmark": landmark_name,
+    })
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
