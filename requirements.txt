@@ -13,9 +13,9 @@ alembic
 
 # Agentic system
 langchain
-langchain-anthropic
+langchain-openai
 langchain-community
-anthropic
+openai
 pgvector
 sentence-transformers
 wikipedia-api

@@ -61,7 +61,7 @@ class NarrationEngine:
         Returns:
             Narration string.
         """
-        if settings.anthropic_api_key:
+        if settings.openai_api_key:
             try:
                 return self._llm_narration(
                     scene_result, landmark, coordinates,
@@ -88,7 +88,7 @@ class NarrationEngine:
         conversation_history: list[dict],
     ) -> str:
         """Generate narration using Claude via LangChain."""
-        from langchain_anthropic import ChatAnthropic
+        from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage, SystemMessage
 
         scene_type = scene_result["primary"]["category"]
@@ -136,9 +136,9 @@ class NarrationEngine:
                 messages.append(AIMessage(content=turn["content"]))
         messages.append(HumanMessage(content=user_message))
 
-        llm = ChatAnthropic(
-            model=settings.claude_model,
-            api_key=settings.anthropic_api_key,
+        llm = ChatOpenAI(
+            model=settings.gpt_model,
+            api_key=settings.openai_api_key,
             max_tokens=400,
         )
         response = llm.invoke(messages)
