@@ -5,7 +5,7 @@ Flow: vision → context → narration → END
 """
 
 import logging
-from typing import Annotated, Any
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph

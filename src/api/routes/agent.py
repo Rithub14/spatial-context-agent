@@ -59,7 +59,10 @@ class FollowupRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/agent/analyze")
-def agent_analyze(request: AgentAnalyzeRequest) -> dict:
+def agent_analyze(
+    request: AgentAnalyzeRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
     """Run the full LangGraph multi-agent pipeline on an image + location.
 
     Returns narration, scene result, landmark, step trace, and session_id.
@@ -87,7 +90,8 @@ def agent_analyze(request: AgentAnalyzeRequest) -> dict:
                 detail="No GPS data. Provide latitude/longitude or an image with EXIF GPS.",
             )
 
-    session_id = request.session_id or str(_uuid.uuid4())
+    session_id = _ensure_session(request.session_id, request.persona, db)
+    history = _get_session_history(session_id, db)
 
     state = {
         "image_b64": request.image,
@@ -95,7 +99,7 @@ def agent_analyze(request: AgentAnalyzeRequest) -> dict:
         "longitude": lng,
         "persona": request.persona,
         "session_id": session_id,
-        "conversation_history": _get_session_history(session_id),
+        "conversation_history": history,
         "scene_result": {},
         "landmark": {},
         "knowledge_chunks": "",
@@ -109,8 +113,9 @@ def agent_analyze(request: AgentAnalyzeRequest) -> dict:
 
     # Persist trace and conversation turn
     _session_traces[session_id] = result["step_trace"]
-    _add_session_turn(session_id, "assistant", result["narration"],
-                      result.get("landmark", {}).get("name"))
+    lm = result.get("landmark", {})
+    landmark_name = lm.get("name") if lm.get("found") else None
+    _add_session_turn(session_id, "assistant", result["narration"], landmark_name, db)
 
     landmark = result.get("landmark", {})
     return {
@@ -135,14 +140,17 @@ def agent_analyze(request: AgentAnalyzeRequest) -> dict:
 
 
 @router.post("/agent/followup")
-def agent_followup(request: FollowupRequest) -> dict:
+def agent_followup(
+    request: FollowupRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
     """Answer a follow-up question using conversation history (no image needed)."""
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
 
     from src.pipeline.narration_engine import PERSONA_PROMPTS
 
-    history = _get_session_history(request.session_id)
+    history = _get_session_history(request.session_id, db)
     if not history:
         raise HTTPException(status_code=404, detail="Session not found or expired.")
 
@@ -165,8 +173,8 @@ def agent_followup(request: FollowupRequest) -> dict:
     else:
         answer = "OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file."
 
-    _add_session_turn(request.session_id, "user", request.question)
-    _add_session_turn(request.session_id, "assistant", answer)
+    _add_session_turn(request.session_id, "user", request.question, None, db)
+    _add_session_turn(request.session_id, "assistant", answer, None, db)
 
     return {"session_id": request.session_id, "answer": answer}
 
@@ -179,23 +187,30 @@ def get_trace(session_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Session helpers (in-memory, replaced by DB in Day 10)
+# Session helpers — DB-backed via SessionMemory
 # ---------------------------------------------------------------------------
 
-_session_history: dict[str, list[dict]] = {}
+def _get_session_history(session_id: str, db: Session) -> list[dict]:
+    from src.agent.memory import SessionMemory
+    return SessionMemory(db).get_history(session_id)
 
 
-def _get_session_history(session_id: str) -> list[dict]:
-    return _session_history.get(session_id, [])
+def _ensure_session(session_id: str | None, persona: str, db: Session) -> str:
+    """Return existing session_id or create a new one in the DB."""
+    from src.agent.memory import SessionMemory
+    mem = SessionMemory(db)
+    if session_id:
+        existing = mem.get_session(session_id)
+        if existing:
+            return session_id
+    return mem.create_session(persona=persona)
 
 
-def _add_session_turn(session_id: str, role: str, content: str,
-                      landmark_name: str | None = None) -> None:
-    if session_id not in _session_history:
-        _session_history[session_id] = []
-    _session_history[session_id].append({
-        "role": role, "content": content, "landmark": landmark_name,
-    })
+def _add_session_turn(
+    session_id: str, role: str, content: str, landmark_name: str | None, db: Session
+) -> None:
+    from src.agent.memory import SessionMemory
+    SessionMemory(db).add_turn(session_id, role, content, landmark_name)
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)

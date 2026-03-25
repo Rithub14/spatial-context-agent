@@ -88,8 +88,8 @@ class NarrationEngine:
         conversation_history: list[dict],
     ) -> str:
         """Generate narration using Claude via LangChain."""
-        from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage, SystemMessage
+        from langchain_openai import ChatOpenAI
 
         scene_type = scene_result["primary"]["category"]
         confidence = scene_result["primary"]["confidence"]
