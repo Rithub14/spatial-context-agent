@@ -35,5 +35,8 @@ class Settings(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
     default_persona: str = "historian"
 
+    # Foursquare Places API
+    foursquare_api_key: str = ""
+
 
 settings = Settings()

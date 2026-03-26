@@ -82,6 +82,59 @@ def retrieve_knowledge_tool(landmark_name: str, query: str, landmark_id: str) ->
 
 
 @tool
+def reverse_geocode_tool(latitude: float, longitude: float) -> str:
+    """Reverse geocode GPS coordinates to get real venue/POI names using Foursquare Places API.
+
+    Returns the nearest known places (restaurants, landmarks, venues) at the given
+    coordinates. Use this to identify any location in the world, not just the 18
+    landmarks in the local database. Always call this when no DB landmark is found.
+    """
+    import httpx
+
+    from src.config import settings
+
+    if not settings.foursquare_api_key:
+        return "Foursquare API key not configured."
+
+    try:
+        response = httpx.get(
+            "https://api.foursquare.com/v3/places/nearby",
+            headers={
+                "Authorization": settings.foursquare_api_key,
+                "Accept": "application/json",
+            },
+            params={
+                "ll": f"{latitude},{longitude}",
+                "limit": 5,
+                "fields": "name,categories,distance,location",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        results = response.json().get("results", [])
+
+        if not results:
+            return f"No venues found near ({latitude:.4f}, {longitude:.4f})."
+
+        lines = []
+        for place in results:
+            name = place.get("name", "Unknown")
+            dist = place.get("distance", 0)
+            cats = ", ".join(c["name"] for c in place.get("categories", []))
+            loc = place.get("location", {})
+            address = loc.get("formatted_address", "")
+            lines.append(f"- {name} ({dist}m away) — {cats} — {address}")
+
+        logger.info("reverse_geocode_tool: found %d venues near (%.4f, %.4f)",
+                    len(results), latitude, longitude)
+        return f"Nearby venues at ({latitude:.4f}, {longitude:.4f}):\n" + "\n".join(lines)
+
+    except Exception as exc:
+        logger.error("Foursquare API error: %s", exc)
+        return f"Could not reverse geocode location: {exc}"
+
+
+@tool
 def get_nearby_places_tool(latitude: float, longitude: float, category: str = "") -> str:
     """Find other landmarks near the given coordinates, optionally filtered by category.
 

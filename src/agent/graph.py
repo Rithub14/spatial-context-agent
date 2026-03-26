@@ -59,12 +59,12 @@ def vision_node(state: AgentState) -> dict[str, Any]:
 
 
 def context_node(state: AgentState) -> dict[str, Any]:
-    """Find the nearest landmark and retrieve RAG knowledge chunks."""
-    from src.agent.tools import find_landmark_tool, retrieve_knowledge_tool
+    """Find the nearest landmark, reverse geocode via Foursquare, and retrieve RAG chunks."""
+    from src.agent.tools import find_landmark_tool, retrieve_knowledge_tool, reverse_geocode_tool
 
     trace = state.get("step_trace", [])
 
-    # Find nearest landmark
+    # Find nearest landmark in local DB
     landmark = find_landmark_tool.invoke({
         "latitude": state["latitude"],
         "longitude": state["longitude"],
@@ -83,8 +83,13 @@ def context_node(state: AgentState) -> dict[str, Any]:
         })
         trace.append(f"📚 Retrieved knowledge context ({len(knowledge)} chars)")
     else:
-        knowledge = ""
-        trace.append("📍 No known landmark within 5km radius")
+        # Fall back to Foursquare reverse geocoding for any location in the world
+        trace.append("📍 No local landmark found — querying Foursquare Places API...")
+        knowledge = reverse_geocode_tool.invoke({
+            "latitude": state["latitude"],
+            "longitude": state["longitude"],
+        })
+        trace.append(f"🌍 Foursquare: {knowledge[:80]}...")
 
     return {"landmark": landmark, "knowledge_chunks": knowledge, "step_trace": trace}
 
