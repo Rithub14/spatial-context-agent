@@ -2,6 +2,7 @@
 
 import base64
 import io
+import json
 import uuid
 
 import httpx
@@ -146,30 +147,67 @@ if uploaded_file:
 
         headers = {"X-API-Key": api_key} if api_key else {}
 
-        with st.spinner("Agent thinking…"):
-            try:
-                response = httpx.post(
-                    f"{api_url.rstrip('/')}/api/v1/agent/analyze",
+        # --- Streaming SSE response ---
+        steps_box = st.empty()
+        narration_box = st.empty()
+
+        step_trace: list[str] = []
+        full_narration = ""
+        final_data: dict | None = None
+
+        try:
+            with httpx.Client(timeout=90) as client:
+                with client.stream(
+                    "POST",
+                    f"{api_url.rstrip('/')}/api/v1/agent/stream",
                     json=payload,
                     headers=headers,
-                    timeout=90,
-                )
-                response.raise_for_status()
-                data = response.json()
-            except httpx.HTTPStatusError as e:
-                st.error(f"API error {e.response.status_code}: {e.response.text}")
-                st.stop()
-            except Exception as e:
-                st.error(f"Could not reach API at {api_url}: {e}")
-                st.stop()
+                ) as resp:
+                    if resp.status_code != 200:
+                        resp.read()
+                        st.error(f"API error {resp.status_code}: {resp.text}")
+                        st.stop()
 
-        # Persist session
-        st.session_state.session_id = data["session_id"]
-        st.session_state.last_analysis = data
-        st.session_state.chat_history = [
-            {"role": "assistant", "content": data["narration"]}
-        ]
-        st.rerun()
+                    for line in resp.iter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        event = json.loads(line[6:])
+
+                        if event["type"] == "step":
+                            step_trace.append(event["content"])
+                            steps_box.markdown(
+                                "**Agent thinking…**\n"
+                                + "\n".join(f"- {s}" for s in step_trace)
+                            )
+
+                        elif event["type"] == "token":
+                            full_narration += event["content"]
+                            narration_box.markdown(
+                                f"**Narration**\n\n{full_narration}▌"
+                            )
+
+                        elif event["type"] == "done":
+                            final_data = event
+                            narration_box.markdown(
+                                f"**Narration**\n\n{full_narration}"
+                            )
+                            steps_box.empty()
+
+        except Exception as e:
+            st.error(f"Could not reach API at {api_url}: {e}")
+            st.stop()
+
+        if final_data:
+            # Persist session and trigger full results render
+            st.session_state.session_id = final_data["session_id"]
+            # Merge streamed narration into final_data for results section
+            final_data["narration"] = full_narration
+            final_data["step_trace"] = step_trace
+            st.session_state.last_analysis = final_data
+            st.session_state.chat_history = [
+                {"role": "assistant", "content": full_narration}
+            ]
+            st.rerun()
 
 # ---------------------------------------------------------------------------
 # Results + Chat (shown after analysis)

@@ -2,13 +2,15 @@
 
 import base64
 import io
+import json
 import logging
 import time
 import uuid as _uuid
+from collections.abc import Generator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -138,6 +140,199 @@ def agent_analyze(
             "persona": request.persona,
         },
     }
+
+
+@router.post("/agent/stream")
+def agent_stream(
+    request: AgentAnalyzeRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> StreamingResponse:
+    """Stream narration token-by-token via Server-Sent Events.
+
+    Runs vision + context nodes synchronously, then streams GPT narration.
+
+    SSE event types:
+      {"type": "step",  "content": "👁️ Scene identified: ..."}
+      {"type": "token", "content": "partial narration text"}
+      {"type": "done",  "session_id": "...", "scene": {...}, "location": {...}, ...}
+    """
+    from src.agent.tools import (
+        classify_scene_tool,
+        find_landmark_tool,
+        retrieve_knowledge_tool,
+        reverse_geocode_tool,
+    )
+
+    # --- Decode image + GPS (must happen before StreamingResponse) ---
+    try:
+        image_bytes = base64.b64decode(request.image)
+        raw_image = Image.open(io.BytesIO(image_bytes))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image data.")
+
+    lat = request.latitude
+    lng = request.longitude
+    if lat is None or lng is None:
+        coords = LocationExtractor.extract_gps(raw_image)
+        if coords:
+            lat, lng = coords
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="No GPS data. Provide latitude/longitude or an image with EXIF GPS.",
+            )
+
+    session_id = _ensure_session(request.session_id, request.persona, db)
+    history = _get_session_history(session_id, db)
+
+    # --- Run vision node synchronously ---
+    t_start = time.perf_counter()
+    scene_result = classify_scene_tool.invoke({"image_b64": request.image})
+    step_trace: list[str] = [
+        f"👁️ Scene identified: {scene_result['primary']['category']} "
+        f"({scene_result['primary']['confidence']:.0%} confidence)"
+    ]
+
+    # --- Run context node synchronously ---
+    landmark = find_landmark_tool.invoke({"latitude": lat, "longitude": lng})
+    if landmark.get("found"):
+        step_trace.append(
+            f"📍 Landmark found: {landmark['name']} ({landmark['distance_meters']:.0f}m away)"
+        )
+        knowledge = retrieve_knowledge_tool.invoke({
+            "landmark_name": landmark["name"],
+            "query": f"{landmark['name']} {scene_result['primary']['category']} history",
+            "landmark_id": landmark["id"],
+        })
+        step_trace.append(f"📚 Retrieved knowledge context ({len(knowledge)} chars)")
+    else:
+        step_trace.append("📍 No local landmark — querying Foursquare Places API...")
+        knowledge = reverse_geocode_tool.invoke({"latitude": lat, "longitude": lng})
+        step_trace.append(f"🌍 Foursquare: {knowledge[:80]}...")
+
+    # --- Build narration prompt (same as narration_node) ---
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+    from src.pipeline.narration_engine import PERSONA_PROMPTS
+
+    system_prompt = PERSONA_PROMPTS.get(request.persona, PERSONA_PROMPTS["historian"])
+    system_prompt += "\n\nKeep your response under 300 characters. Be vivid but concise."
+
+    context_parts: list[str] = []
+    if landmark.get("found"):
+        context_parts.append(
+            f"Landmark: {landmark['name']}, {landmark.get('district', '')}, "
+            f"{landmark.get('city', 'Berlin')}. "
+            f"Category: {landmark.get('category', '')}. "
+            f"Historical period: {landmark.get('historical_period', '')}. "
+            f"Distance: {landmark.get('distance_meters', 0):.0f}m from user."
+        )
+    if knowledge:
+        context_parts.append(f"Knowledge base context:\n{knowledge[:800]}")
+
+    scene_type = scene_result["primary"]["category"]
+    confidence = scene_result["primary"]["confidence"]
+    user_content = (
+        f"Location: ({lat:.4f}, {lng:.4f})\n"
+        f"Scene: {scene_type} ({confidence:.0%} confidence)\n"
+        + ("\n".join(context_parts) if context_parts else "No landmark data available.")
+        + "\n\nGenerate a tour guide narration."
+    )
+
+    messages: list = [SystemMessage(content=system_prompt)]
+    for turn in history[-4:]:
+        if turn["role"] == "user":
+            messages.append(HumanMessage(content=turn["content"]))
+        else:
+            messages.append(AIMessage(content=turn["content"]))
+    messages.append(HumanMessage(content=user_content))
+
+    # Snapshot values for use inside the generator (avoids closure over mutable db)
+    _session_id = session_id
+    _lat, _lng = lat, lng
+    _landmark = landmark
+    _scene_result = scene_result
+    _step_trace = list(step_trace)
+    _inference_start = t_start
+    _persona = request.persona
+
+    def _sse(event: dict) -> str:
+        return f"data: {json.dumps(event)}\n\n"
+
+    def generate() -> Generator[str, None, None]:
+        from langchain_openai import ChatOpenAI
+
+        from src.db.session import SessionLocal
+
+        # 1 — emit step trace
+        for step in _step_trace:
+            yield _sse({"type": "step", "content": step})
+
+        # 2 — stream narration tokens
+        full_narration = ""
+        if settings.openai_api_key:
+            llm = ChatOpenAI(
+                model=settings.gpt_model,
+                api_key=settings.openai_api_key,
+                max_tokens=300,
+                streaming=True,
+            )
+            for chunk in llm.stream(messages):
+                token = chunk.content
+                if token:
+                    full_narration += token
+                    yield _sse({"type": "token", "content": token})
+            _step_trace.append(f"🎙️ Narration streamed by {settings.gpt_model} ({_persona} persona)")
+        else:
+            from src.pipeline.narration_engine import NarrationEngine
+            lm = _landmark if _landmark.get("found") else None
+            full_narration = NarrationEngine()._template_narration(
+                _scene_result, lm, (_lat, _lng), 300
+            )
+            yield _sse({"type": "token", "content": full_narration})
+            _step_trace.append("🎙️ Narration generated via template (no OpenAI key)")
+
+        inference_ms = int((time.perf_counter() - _inference_start) * 1000)
+
+        # 3 — persist to DB using a fresh session
+        try:
+            fresh_db = SessionLocal()
+            lm_name = _landmark.get("name") if _landmark.get("found") else None
+            _add_session_turn(_session_id, "assistant", full_narration, lm_name, fresh_db)
+            fresh_db.close()
+        except Exception as exc:
+            logger.error("stream: failed to persist session turn: %s", exc)
+
+        _session_traces[_session_id] = _step_trace
+
+        # 4 — emit done event with full metadata
+        lm_data = _landmark if _landmark.get("found") else {}
+        yield _sse({
+            "type": "done",
+            "session_id": _session_id,
+            "narration": full_narration,
+            "scene": _scene_result,
+            "location": {
+                "nearest_landmark": lm_data.get("name"),
+                "distance_meters": lm_data.get("distance_meters"),
+                "district": lm_data.get("district"),
+                "city": lm_data.get("city"),
+            },
+            "step_trace": _step_trace,
+            "metadata": {
+                "model_version": settings.clip_model_name,
+                "inference_time_ms": inference_ms,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "coordinates": {"latitude": _lat, "longitude": _lng},
+                "persona": _persona,
+            },
+        })
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/agent/followup")
