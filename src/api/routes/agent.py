@@ -145,25 +145,60 @@ def agent_followup(
     request: FollowupRequest,
     db: Annotated[Session, Depends(get_db)],
 ) -> dict:
-    """Answer a follow-up question using conversation history (no image needed)."""
-    from langchain_core.messages import HumanMessage, SystemMessage
+    """Answer a follow-up question with intent detection and routing.
+
+    Detects user intent (nearby_places, historical_facts, directions, etc.) and
+    routes to the appropriate tool or LLM strategy before answering.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
 
+    from src.pipeline.intent_detector import (
+        INTENT_HISTORICAL_FACTS,
+        INTENT_NEARBY_PLACES,
+        INTENT_OPENING_HOURS,
+        IntentDetector,
+    )
     from src.pipeline.narration_engine import PERSONA_PROMPTS
 
     history = _get_session_history(request.session_id, db)
     if not history:
         raise HTTPException(status_code=404, detail="Session not found or expired.")
 
+    # --- Detect intent ---
+    intent_result = IntentDetector().detect(request.question)
+    intent = intent_result.intent
+    logger.info(
+        "followup session=%s intent=%s method=%s",
+        request.session_id[:8],
+        intent,
+        intent_result.method,
+    )
+
+    # --- Tool-augmented context for specific intents ---
+    tool_context = ""
+    if intent == INTENT_NEARBY_PLACES:
+        tool_context = _get_nearby_context(history)
+    elif intent == INTENT_HISTORICAL_FACTS:
+        tool_context = _get_historical_context(request.session_id, history, db)
+    elif intent == INTENT_OPENING_HOURS:
+        tool_context = (
+            "Note: I don't have real-time opening hours. Advise the user to check "
+            "the official website or Google Maps for current hours and ticket prices."
+        )
+
+    # --- Build LLM messages ---
     system_prompt = PERSONA_PROMPTS.get(request.persona, PERSONA_PROMPTS["historian"])
-    system_prompt += " Answer the user's follow-up question concisely."
+    intent_instruction = _intent_instruction(intent)
+    system_prompt = f"{system_prompt}\n\n{intent_instruction}"
+    if tool_context:
+        system_prompt += f"\n\nContext for this response:\n{tool_context}"
 
     messages: list = [SystemMessage(content=system_prompt)]
     for turn in history[-6:]:
         if turn["role"] == "user":
             messages.append(HumanMessage(content=turn["content"]))
         else:
-            from langchain_core.messages import AIMessage
             messages.append(AIMessage(content=turn["content"]))
     messages.append(HumanMessage(content=request.question))
 
@@ -177,7 +212,12 @@ def agent_followup(
     _add_session_turn(request.session_id, "user", request.question, None, db)
     _add_session_turn(request.session_id, "assistant", answer, None, db)
 
-    return {"session_id": request.session_id, "answer": answer}
+    return {
+        "session_id": request.session_id,
+        "answer": answer,
+        "intent": intent,
+        "intent_confidence": round(intent_result.confidence, 2),
+    }
 
 
 @router.post("/agent/speak")
@@ -207,6 +247,112 @@ def get_trace(session_id: str) -> dict:
     """Return the step trace for a given session (agent thinking steps)."""
     trace = _session_traces.get(session_id, [])
     return {"session_id": session_id, "step_trace": trace}
+
+
+# ---------------------------------------------------------------------------
+# Intent routing helpers
+# ---------------------------------------------------------------------------
+
+def _intent_instruction(intent: str) -> str:
+    """Return a concise instruction suffix that steers the LLM for this intent."""
+    from src.pipeline.intent_detector import (
+        INTENT_DIRECTIONS,
+        INTENT_HISTORICAL_FACTS,
+        INTENT_NEARBY_PLACES,
+        INTENT_OPENING_HOURS,
+        INTENT_PHOTO_TIP,
+        INTENT_TELL_MORE,
+        INTENT_TRANSLATION,
+    )
+
+    instructions = {
+        INTENT_NEARBY_PLACES: (
+            "The user wants to know what else is nearby. "
+            "Suggest 2-3 specific nearby attractions with brief descriptions."
+        ),
+        INTENT_HISTORICAL_FACTS: (
+            "The user wants historical facts. "
+            "Focus on dates, key figures, and significant events. Be precise."
+        ),
+        INTENT_TELL_MORE: (
+            "The user wants more detail about the current location. "
+            "Expand on what was just said with interesting additional facts."
+        ),
+        INTENT_OPENING_HOURS: (
+            "The user is asking about visiting logistics (hours, tickets, fees). "
+            "Provide what you know and advise checking official sources for current info."
+        ),
+        INTENT_DIRECTIONS: (
+            "The user wants directions or transit information. "
+            "Describe how to reach the location from the city centre, "
+            "mentioning relevant public transport options."
+        ),
+        INTENT_TRANSLATION: (
+            "The user wants a translation. Provide the translation clearly "
+            "and, if relevant, note any interesting linguistic context."
+        ),
+        INTENT_PHOTO_TIP: (
+            "The user wants photography advice for this spot. "
+            "Suggest the best angles, lighting conditions, and times of day."
+        ),
+    }
+    return instructions.get(intent, "Answer the user's question concisely and engagingly.")
+
+
+def _get_nearby_context(history: list[dict]) -> str:
+    """Pull lat/lng from session trace and call get_nearby_places_tool."""
+    # Extract the last known landmark from conversation history
+    landmark_name = next(
+        (t.get("landmark_name") for t in reversed(history) if t.get("landmark_name")),
+        None,
+    )
+    if not landmark_name:
+        return ""
+    try:
+        from src.agent.tools import get_nearby_places_tool
+        from src.db.models import Landmark
+        from src.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            lm = db.query(Landmark).filter(Landmark.name == landmark_name).first()
+            if lm:
+                result = get_nearby_places_tool.invoke({
+                    "latitude": lm.latitude,
+                    "longitude": lm.longitude,
+                    "category": "",
+                })
+                return result
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("_get_nearby_context failed: %s", exc)
+    return ""
+
+
+def _get_historical_context(session_id: str, history: list[dict], db) -> str:
+    """Retrieve RAG knowledge for the landmark in the current session."""
+    from src.agent.memory import SessionMemory
+
+    visited = SessionMemory(db).get_visited_landmarks(session_id)
+    if not visited:
+        return ""
+    try:
+        from src.db.models import Landmark
+        from src.pipeline.rag_retriever import RAGRetriever
+
+        landmark_name = visited[-1]
+        lm = db.query(Landmark).filter(Landmark.name == landmark_name).first()
+        if lm:
+            chunks = RAGRetriever(db).retrieve(
+                query=f"{landmark_name} history construction architecture",
+                landmark_id=str(lm.id),
+                top_k=2,
+            )
+            return "\n\n".join(chunks) if chunks else ""
+    except Exception as exc:
+        logger.warning("_get_historical_context failed: %s", exc)
+    return ""
 
 
 # ---------------------------------------------------------------------------

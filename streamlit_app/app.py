@@ -255,6 +255,7 @@ if st.session_state.last_analysis:
             st.markdown(question)
 
         headers = {"X-API-Key": api_key} if api_key else {}
+        detected_intent = None
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
                 try:
@@ -269,10 +270,21 @@ if st.session_state.last_analysis:
                         timeout=30,
                     )
                     r.raise_for_status()
-                    answer = r.json()["answer"]
+                    resp_data = r.json()
+                    answer = resp_data["answer"]
+                    detected_intent = resp_data.get("intent")
                 except Exception as e:
                     answer = f"Error: {e}"
-                st.markdown(answer)
+            if detected_intent:
+                _INTENT_ICONS = {
+                    "nearby_places": "📍", "historical_facts": "🏛️",
+                    "tell_me_more": "📖", "opening_hours": "🕐",
+                    "directions": "🗺️", "translation": "🌐",
+                    "photo_tip": "📷", "general": "💬",
+                }
+                icon = _INTENT_ICONS.get(detected_intent, "💬")
+                st.caption(f"{icon} Intent: `{detected_intent}`")
+            st.markdown(answer)
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
 else:
