@@ -86,6 +86,8 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
+    raw_bytes = uploaded_file.read()          # keep original bytes (EXIF intact)
+    uploaded_file.seek(0)                     # reset for PIL
     image = Image.open(uploaded_file)
     col_img, col_meta = st.columns([1, 1])
 
@@ -131,9 +133,7 @@ if uploaded_file:
                                 use_container_width=True)
 
     if analyze_clicked:
-        buf = io.BytesIO()
-        image.save(buf, format="JPEG")
-        b64_image = base64.b64encode(buf.getvalue()).decode()
+        b64_image = base64.b64encode(raw_bytes).decode()
 
         payload: dict = {
             "image": b64_image,
@@ -208,6 +208,22 @@ if st.session_state.last_analysis:
             }), zoom=14)
         else:
             st.info("No known landmark within 5 km radius.")
+
+    # Voice narration
+    st.markdown("### 🔊 Listen to Narration")
+    if st.button("▶️ Play Audio", use_container_width=False):
+        with st.spinner("Generating audio…"):
+            try:
+                r = httpx.post(
+                    f"{api_url.rstrip('/')}/api/v1/agent/speak",
+                    json={"text": data["narration"], "language": "en"},
+                    headers={"X-API-Key": api_key} if api_key else {},
+                    timeout=30,
+                )
+                r.raise_for_status()
+                st.audio(r.content, format="audio/mp3", autoplay=True)
+            except Exception as e:
+                st.error(f"Audio generation failed: {e}")
 
     # Agent thinking trace
     with st.expander("🧠 Agent Thinking Steps"):

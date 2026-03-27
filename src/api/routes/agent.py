@@ -8,6 +8,7 @@ import uuid as _uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -177,6 +178,28 @@ def agent_followup(
     _add_session_turn(request.session_id, "assistant", answer, None, db)
 
     return {"session_id": request.session_id, "answer": answer}
+
+
+@router.post("/agent/speak")
+def agent_speak(body: dict) -> Response:
+    """Convert a narration string to MP3 audio and return it as a binary response.
+
+    Request body: {"text": "...", "language": "en"}
+    Returns: audio/mpeg binary stream ready for playback.
+    """
+    from src.pipeline.tts_engine import TTSEngine
+
+    text = body.get("text", "").strip()
+    language = body.get("language", "en")
+
+    if not text:
+        raise HTTPException(status_code=400, detail="'text' field is required.")
+
+    try:
+        audio_bytes = TTSEngine().synthesize(text, language)
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/agent/trace/{session_id}")

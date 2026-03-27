@@ -11,6 +11,9 @@ python-multipart
 httpx
 alembic
 
+# Voice output
+gTTS
+
 # Agentic system
 langchain
 langchain-openai
