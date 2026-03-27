@@ -34,6 +34,10 @@ _classifier = SceneClassifier()
 # In-memory session trace store (session_id → step_trace list)
 _session_traces: dict[str, list[str]] = {}
 
+# In-memory location store (session_id → last known location context)
+_session_coords: dict[str, dict] = {}
+# shape: {"lat": float, "lng": float, "landmark": str | None, "scene": str}
+
 
 # ---------------------------------------------------------------------------
 # Pydantic models for agentic endpoints
@@ -119,6 +123,11 @@ def agent_analyze(
     lm = result.get("landmark", {})
     landmark_name = lm.get("name") if lm.get("found") else None
     _add_session_turn(session_id, "assistant", result["narration"], landmark_name, db)
+    _session_coords[session_id] = {
+        "lat": lat, "lng": lng,
+        "landmark": landmark_name,
+        "scene": result["scene_result"]["primary"]["category"],
+    }
 
     landmark = result.get("landmark", {})
     return {
@@ -304,6 +313,11 @@ def agent_stream(
             logger.error("stream: failed to persist session turn: %s", exc)
 
         _session_traces[_session_id] = _step_trace
+        _session_coords[_session_id] = {
+            "lat": _lat, "lng": _lng,
+            "landmark": _landmark.get("name") if _landmark.get("found") else None,
+            "scene": _scene_result["primary"]["category"],
+        }
 
         # 4 — emit done event with full metadata
         lm_data = _landmark if _landmark.get("found") else {}
@@ -350,6 +364,7 @@ def agent_followup(
 
     from src.pipeline.intent_detector import (
         INTENT_HISTORICAL_FACTS,
+        INTENT_MOVED,
         INTENT_NEARBY_PLACES,
         INTENT_OPENING_HOURS,
         IntentDetector,
@@ -370,6 +385,34 @@ def agent_followup(
         intent_result.method,
     )
 
+    # --- Short-circuit: user has moved, ask for new image ---
+    if intent == INTENT_MOVED:
+        answer = (
+            "Got it — upload a new photo from your current location and click "
+            "Analyze so I can orient myself. I'll pick up the tour from there!"
+        )
+        _add_session_turn(request.session_id, "user", request.question, None, db)
+        _add_session_turn(request.session_id, "assistant", answer, None, db)
+        return {
+            "session_id": request.session_id,
+            "answer": answer,
+            "intent": intent,
+            "intent_confidence": round(intent_result.confidence, 2),
+        }
+
+    # --- Inject last known location into system context ---
+    loc_ctx = _session_coords.get(request.session_id)
+    location_block = ""
+    if loc_ctx:
+        lm_line = f"near {loc_ctx['landmark']}" if loc_ctx["landmark"] else ""
+        location_block = (
+            f"The user's current location (from their last uploaded photo): "
+            f"({loc_ctx['lat']:.5f}, {loc_ctx['lng']:.5f}) {lm_line}. "
+            f"Scene type: {loc_ctx['scene']}. "
+            "Use this as 'the user's location' when answering distance or direction questions. "
+            "If asked how far something is, estimate relative to these coordinates."
+        )
+
     # --- Tool-augmented context for specific intents ---
     tool_context = ""
     if intent == INTENT_NEARBY_PLACES:
@@ -386,6 +429,8 @@ def agent_followup(
     system_prompt = PERSONA_PROMPTS.get(request.persona, PERSONA_PROMPTS["historian"])
     intent_instruction = _intent_instruction(intent)
     system_prompt = f"{system_prompt}\n\n{intent_instruction}"
+    if location_block:
+        system_prompt += f"\n\n{location_block}"
     if tool_context:
         system_prompt += f"\n\nContext for this response:\n{tool_context}"
 
@@ -453,6 +498,7 @@ def _intent_instruction(intent: str) -> str:
     from src.pipeline.intent_detector import (
         INTENT_DIRECTIONS,
         INTENT_HISTORICAL_FACTS,
+        INTENT_MOVED,
         INTENT_NEARBY_PLACES,
         INTENT_OPENING_HOURS,
         INTENT_PHOTO_TIP,
@@ -489,6 +535,10 @@ def _intent_instruction(intent: str) -> str:
         INTENT_PHOTO_TIP: (
             "The user wants photography advice for this spot. "
             "Suggest the best angles, lighting conditions, and times of day."
+        ),
+        INTENT_MOVED: (
+            "The user has moved to a new location. "
+            "Ask them to upload a new photo so you can orient yourself."
         ),
     }
     return instructions.get(intent, "Answer the user's question concisely and engagingly.")

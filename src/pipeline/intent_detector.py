@@ -23,6 +23,7 @@ INTENT_OPENING_HOURS = "opening_hours"
 INTENT_DIRECTIONS = "directions"
 INTENT_TRANSLATION = "translation"
 INTENT_PHOTO_TIP = "photo_tip"
+INTENT_MOVED = "moved"
 INTENT_GENERAL = "general"
 
 ALL_INTENTS = [
@@ -33,6 +34,7 @@ ALL_INTENTS = [
     INTENT_DIRECTIONS,
     INTENT_TRANSLATION,
     INTENT_PHOTO_TIP,
+    INTENT_MOVED,
     INTENT_GENERAL,
 ]
 
@@ -76,6 +78,14 @@ _KEYWORD_PATTERNS: dict[str, list[str]] = {
         r"\blight(ing)?\b", r"\bbest time (to|for)\b",
         r"\bhow (should|to) (i |we )?photo\b",
     ],
+    INTENT_MOVED: [
+        r"\bi('ve| have) moved\b", r"\bi'm (now|currently) at\b",
+        r"\bi am (now|currently) (at|near|in)\b",
+        r"\bdifferent location\b", r"\bnew location\b",
+        r"\bi moved\b", r"\bi'm somewhere else\b",
+        r"\bi walked (to|over)\b", r"\bi('ve| have) (walked|traveled|gone) to\b",
+        r"\bnow (i'm|i am) (at|near|in)\b",
+    ],
 }
 
 
@@ -111,11 +121,12 @@ class IntentDetector:
         "  directions      — asking how to get somewhere or transit options\n"
         "  translation     — asking to translate or say something in another language\n"
         "  photo_tip       — asking for photography advice at this spot\n"
+        "  moved           — user says they have moved to a new location\n"
         "  general         — anything else\n\n"
         "Reply with ONLY the intent name, nothing else."
     )
 
-    def detect(self, question: str, session_context: dict | None = None) -> IntentResult:
+    def detect(self, question: str) -> IntentResult:
         """Detect the intent of a follow-up question.
 
         Args:

@@ -313,16 +313,18 @@ if st.session_state.last_analysis:
                     detected_intent = resp_data.get("intent")
                 except Exception as e:
                     answer = f"Error: {e}"
+            _INTENT_ICONS = {
+                "nearby_places": "📍", "historical_facts": "🏛️",
+                "tell_me_more": "📖", "opening_hours": "🕐",
+                "directions": "🗺️", "translation": "🌐",
+                "photo_tip": "📷", "moved": "🚶", "general": "💬",
+            }
             if detected_intent:
-                _INTENT_ICONS = {
-                    "nearby_places": "📍", "historical_facts": "🏛️",
-                    "tell_me_more": "📖", "opening_hours": "🕐",
-                    "directions": "🗺️", "translation": "🌐",
-                    "photo_tip": "📷", "general": "💬",
-                }
                 icon = _INTENT_ICONS.get(detected_intent, "💬")
                 st.caption(f"{icon} Intent: `{detected_intent}`")
             st.markdown(answer)
+            if detected_intent == "moved":
+                st.info("Upload a new photo above and click **Analyze** to update your location.")
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
 else:
