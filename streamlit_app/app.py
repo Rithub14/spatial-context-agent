@@ -37,7 +37,7 @@ if "last_analysis" not in st.session_state:
 
 with st.sidebar:
     st.title("⚙️ Settings")
-    api_url = st.text_input("API URL", value="http://localhost:8000")
+    api_url = st.text_input("API URL", value="http://localhost:8001")
     api_key = st.text_input("API Key (optional)", value="", type="password")
     st.caption("Leave blank if ENABLE_AUTH=false.")
     st.divider()
