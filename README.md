@@ -258,34 +258,6 @@ spatial-context-agent/
 
 ---
 
-## Key Design Decisions
-
-**CLIP for zero-shot scene classification**
-No labelled training data or model retraining needed per city. New landmark categories = update a Python list. ViT-B/32 balances accuracy (~87% on landmark scenes) and CPU inference speed (~300 ms).
-
-**LangGraph for orchestration**
-Three-node `StateGraph` (vision → context → narration) gives a clear audit trail via `step_trace`, makes each stage independently testable, and mirrors the autonomous agent pattern used in production spatial platforms.
-
-**pgvector RAG over a pure LLM approach**
-Wikipedia summaries and DB descriptions are chunked, embedded with `all-MiniLM-L6-v2`, and stored as 384-dim vectors. Cosine similarity retrieval grounds the narration in factual content, reducing hallucinations without expensive fine-tuning.
-
-**Intent detection before every follow-up**
-Classifying the user's question first (8 intents) lets the system call the right tool — web search for current events, RAG for history, DB proximity for nearby places — rather than throwing everything at the LLM and hoping.
-
-**DuckDuckGo for live web search**
-Zero cost, no API key, no rate-limit account required. Today's date is always injected into the system prompt so the LLM cannot answer "any exhibitions?" with stale 2023 training data.
-
-**SSE streaming over a single JSON response**
-Step trace events appear as each node completes (giving the user visual feedback that the agent is working), then narration tokens stream in character-by-character. This matches the real-time feel of production spatial agents.
-
-**GPS from EXIF, not typed input**
-Every smartphone photo already has GPS metadata. Auto-extraction removes friction for the tourist use case. Explicit lat/lng is the fallback; the last-known GPS from an uploaded photo is reused for all follow-up distance/direction questions.
-
-**Toggleable auth + rate limiting**
-`ENABLE_AUTH=false` + `ENABLE_RATE_LIMIT=false` for local dev, flip to `true` in production via env vars — no code changes needed.
-
----
-
 ## Testing
 
 ```bash
