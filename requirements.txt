@@ -23,6 +23,7 @@ openai
 pgvector
 sentence-transformers
 wikipedia-api
+duckduckgo-search
 
 # Dev / test
 pytest

@@ -317,7 +317,8 @@ if st.session_state.last_analysis:
                 "nearby_places": "📍", "historical_facts": "🏛️",
                 "tell_me_more": "📖", "opening_hours": "🕐",
                 "directions": "🗺️", "translation": "🌐",
-                "photo_tip": "📷", "moved": "🚶", "general": "💬",
+                "photo_tip": "📷", "moved": "🚶",
+                "current_events": "🎭", "general": "💬",
             }
             if detected_intent:
                 icon = _INTENT_ICONS.get(detected_intent, "💬")

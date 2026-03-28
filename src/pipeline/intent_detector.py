@@ -24,6 +24,7 @@ INTENT_DIRECTIONS = "directions"
 INTENT_TRANSLATION = "translation"
 INTENT_PHOTO_TIP = "photo_tip"
 INTENT_MOVED = "moved"
+INTENT_CURRENT_EVENTS = "current_events"
 INTENT_GENERAL = "general"
 
 ALL_INTENTS = [
@@ -35,6 +36,7 @@ ALL_INTENTS = [
     INTENT_TRANSLATION,
     INTENT_PHOTO_TIP,
     INTENT_MOVED,
+    INTENT_CURRENT_EVENTS,
     INTENT_GENERAL,
 ]
 
@@ -77,6 +79,14 @@ _KEYWORD_PATTERNS: dict[str, list[str]] = {
         r"\bphoto(graph)?\b", r"\bpicture\b", r"\bshot\b", r"\bangle\b",
         r"\blight(ing)?\b", r"\bbest time (to|for)\b",
         r"\bhow (should|to) (i |we )?photo\b",
+    ],
+    INTENT_CURRENT_EVENTS: [
+        r"\bexhibition(s)?\b", r"\bexhibit(s)?\b", r"\bshow(s|ing)?\b",
+        r"\bevent(s)?\b", r"\bconcert(s)?\b", r"\bfestival(s)?\b",
+        r"\bwhat'?s? on\b", r"\bhappening (now|soon|this|near)\b",
+        r"\bupcoming\b", r"\bnear future\b", r"\bthis (week|month|weekend)\b",
+        r"\bnow showing\b", r"\bcurrently (showing|on|running)\b",
+        r"\bperformance(s)?\b", r"\bschedule\b", r"\bprogramme?\b",
     ],
     INTENT_MOVED: [
         r"\bi('ve| have) moved\b", r"\bi'm (now|currently) at\b",
@@ -122,6 +132,7 @@ class IntentDetector:
         "  translation     — asking to translate or say something in another language\n"
         "  photo_tip       — asking for photography advice at this spot\n"
         "  moved           — user says they have moved to a new location\n"
+        "  current_events  — asking about exhibitions, events, or anything happening now/soon\n"
         "  general         — anything else\n\n"
         "Reply with ONLY the intent name, nothing else."
     )

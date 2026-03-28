@@ -170,3 +170,35 @@ def get_nearby_places_tool(latitude: float, longitude: float, category: str = ""
         return "Nearby places:\n" + "\n".join(lines)
     finally:
         db.close()
+
+
+@tool
+def web_search_tool(query: str) -> str:
+    """Search the web for current, real-time information using DuckDuckGo.
+
+    Use this for anything that requires up-to-date data beyond the model's
+    training cutoff: current exhibitions, events, concerts, opening hours,
+    ticket prices, news about a location, or anything happening 'now' or
+    'soon'. Always prefer this over making up facts about the present.
+
+    Args:
+        query: Natural language search query.
+    """
+    from duckduckgo_search import DDGS
+
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=4))
+        if not results:
+            return f"No web results found for: {query}"
+        lines = []
+        for r in results:
+            title = r.get("title", "")
+            body = r.get("body", "")[:250]
+            href = r.get("href", "")
+            lines.append(f"**{title}**\n{body}\nSource: {href}")
+        logger.info("web_search_tool: %d results for %r", len(results), query[:60])
+        return "\n\n---\n\n".join(lines)
+    except Exception as exc:
+        logger.error("web_search_tool failed: %s", exc)
+        return f"Web search failed: {exc}"

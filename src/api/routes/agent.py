@@ -359,10 +359,13 @@ def agent_followup(
     Detects user intent (nearby_places, historical_facts, directions, etc.) and
     routes to the appropriate tool or LLM strategy before answering.
     """
+    import datetime
+
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
 
     from src.pipeline.intent_detector import (
+        INTENT_CURRENT_EVENTS,
         INTENT_HISTORICAL_FACTS,
         INTENT_MOVED,
         INTENT_NEARBY_PLACES,
@@ -374,6 +377,8 @@ def agent_followup(
     history = _get_session_history(request.session_id, db)
     if not history:
         raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+    today = datetime.date.today().strftime("%B %d, %Y")  # e.g. "March 28, 2026"
 
     # --- Detect intent ---
     intent_result = IntentDetector().detect(request.question)
@@ -424,15 +429,25 @@ def agent_followup(
             "Note: I don't have real-time opening hours. Advise the user to check "
             "the official website or Google Maps for current hours and ticket prices."
         )
+    elif intent == INTENT_CURRENT_EVENTS:
+        tool_context = _get_current_events_context(loc_ctx, today)
 
     # --- Build LLM messages ---
     system_prompt = PERSONA_PROMPTS.get(request.persona, PERSONA_PROMPTS["historian"])
     intent_instruction = _intent_instruction(intent)
-    system_prompt = f"{system_prompt}\n\n{intent_instruction}"
+    # Always ground the LLM with today's date so it can't hallucinate stale events
+    system_prompt = (
+        f"{system_prompt}\n\n"
+        f"Today's date is {today}. "
+        "Only reference events, exhibitions, or information that are current as of this date. "
+        "Never invent or guess event dates — use the web search context provided.\n\n"
+        f"{intent_instruction}"
+    )
     if location_block:
         system_prompt += f"\n\n{location_block}"
     if tool_context:
-        system_prompt += f"\n\nContext for this response:\n{tool_context}"
+        system_prompt += "\n\nLive web search results (use these, they are current):\n"
+        system_prompt += tool_context
 
     messages: list = [SystemMessage(content=system_prompt)]
     for turn in history[-6:]:
@@ -496,6 +511,7 @@ def get_trace(session_id: str) -> dict:
 def _intent_instruction(intent: str) -> str:
     """Return a concise instruction suffix that steers the LLM for this intent."""
     from src.pipeline.intent_detector import (
+        INTENT_CURRENT_EVENTS,
         INTENT_DIRECTIONS,
         INTENT_HISTORICAL_FACTS,
         INTENT_MOVED,
@@ -540,6 +556,11 @@ def _intent_instruction(intent: str) -> str:
             "The user has moved to a new location. "
             "Ask them to upload a new photo so you can orient yourself."
         ),
+        INTENT_CURRENT_EVENTS: (
+            "The user wants to know about current or upcoming events and exhibitions. "
+            "Use ONLY the live web search results provided — do not invent or recall events "
+            "from training data. Summarise what is actually happening now, with dates."
+        ),
     }
     return instructions.get(intent, "Answer the user's question concisely and engagingly.")
 
@@ -573,6 +594,24 @@ def _get_nearby_context(history: list[dict]) -> str:
     except Exception as exc:
         logger.warning("_get_nearby_context failed: %s", exc)
     return ""
+
+
+def _get_current_events_context(loc_ctx: dict | None, today: str) -> str:
+    """Run a live web search for exhibitions/events near the user's location."""
+    from src.agent.tools import web_search_tool
+
+    location = "Berlin"
+    if loc_ctx and loc_ctx.get("landmark"):
+        location = loc_ctx["landmark"]
+    elif loc_ctx:
+        location = f"Berlin ({loc_ctx['lat']:.3f}, {loc_ctx['lng']:.3f})"
+
+    query = f"{location} exhibitions events happening {today}"
+    try:
+        return web_search_tool.invoke({"query": query})
+    except Exception as exc:
+        logger.warning("_get_current_events_context failed: %s", exc)
+        return ""
 
 
 def _get_historical_context(session_id: str, history: list[dict], db) -> str:
