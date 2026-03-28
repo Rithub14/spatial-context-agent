@@ -30,6 +30,8 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_analysis" not in st.session_state:
     st.session_state.last_analysis = None
+if "audio_cache" not in st.session_state:
+    st.session_state.audio_cache = {}  # key → MP3 bytes
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -57,6 +59,7 @@ with st.sidebar:
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.chat_history = []
         st.session_state.last_analysis = None
+        st.session_state.audio_cache = {}
         st.rerun()
 
     if st.session_state.session_id:
@@ -247,22 +250,6 @@ if st.session_state.last_analysis:
         else:
             st.info("No known landmark within 5 km radius.")
 
-    # Voice narration
-    st.markdown("### 🔊 Listen to Narration")
-    if st.button("▶️ Play Audio", use_container_width=False):
-        with st.spinner("Generating audio…"):
-            try:
-                r = httpx.post(
-                    f"{api_url.rstrip('/')}/api/v1/agent/speak",
-                    json={"text": data["narration"], "language": "en"},
-                    headers={"X-API-Key": api_key} if api_key else {},
-                    timeout=30,
-                )
-                r.raise_for_status()
-                st.audio(r.content, format="audio/mp3", autoplay=True)
-            except Exception as e:
-                st.error(f"Audio generation failed: {e}")
-
     # Agent thinking trace
     with st.expander("🧠 Agent Thinking Steps"):
         for step in data.get("step_trace", []):
@@ -283,50 +270,75 @@ if st.session_state.last_analysis:
     st.divider()
     st.markdown("### 💬 Ask the Tour Guide")
 
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    _INTENT_ICONS = {
+        "nearby_places": "📍", "historical_facts": "🏛️",
+        "tell_me_more": "📖", "opening_hours": "🕐",
+        "directions": "🗺️", "translation": "🌐",
+        "photo_tip": "📷", "moved": "🚶",
+        "current_events": "🎭", "general": "💬",
+    }
 
-    if question := st.chat_input("Ask a follow-up question about this location…"):
-        st.session_state.chat_history.append({"role": "user", "content": question})
-        with st.chat_message("user"):
-            st.markdown(question)
-
-        headers = {"X-API-Key": api_key} if api_key else {}
-        detected_intent = None
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking…"):
+    def _speak_button(text: str, cache_key: str) -> None:
+        """Render a 🔊 button that fetches TTS audio and caches it."""
+        if st.button("🔊", key=f"btn_{cache_key}", help="Listen to this response"):
+            with st.spinner("Generating audio…"):
                 try:
                     r = httpx.post(
-                        f"{api_url.rstrip('/')}/api/v1/agent/followup",
-                        json={
-                            "session_id": st.session_state.session_id,
-                            "question": question,
-                            "persona": persona,
-                        },
-                        headers=headers,
+                        f"{api_url.rstrip('/')}/api/v1/agent/speak",
+                        json={"text": text, "language": "en"},
+                        headers={"X-API-Key": api_key} if api_key else {},
                         timeout=30,
                     )
                     r.raise_for_status()
-                    resp_data = r.json()
-                    answer = resp_data["answer"]
-                    detected_intent = resp_data.get("intent")
+                    st.session_state.audio_cache[cache_key] = r.content
                 except Exception as e:
-                    answer = f"Error: {e}"
-            _INTENT_ICONS = {
-                "nearby_places": "📍", "historical_facts": "🏛️",
-                "tell_me_more": "📖", "opening_hours": "🕐",
-                "directions": "🗺️", "translation": "🌐",
-                "photo_tip": "📷", "moved": "🚶",
-                "current_events": "🎭", "general": "💬",
-            }
-            if detected_intent:
-                icon = _INTENT_ICONS.get(detected_intent, "💬")
-                st.caption(f"{icon} Intent: `{detected_intent}`")
-            st.markdown(answer)
-            if detected_intent == "moved":
-                st.info("Upload a new photo above and click **Analyze** to update your location.")
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                    st.error(f"Audio failed: {e}")
+        if st.session_state.audio_cache.get(cache_key):
+            st.audio(st.session_state.audio_cache[cache_key], format="audio/mp3")
+
+    for i, msg in enumerate(st.session_state.chat_history):
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg["role"] == "assistant":
+                intent = msg.get("intent")
+                if intent:
+                    icon = _INTENT_ICONS.get(intent, "💬")
+                    st.caption(f"{icon} Intent: `{intent}`")
+                if intent == "moved":
+                    st.info("Upload a new photo above and click **Analyze** to update your location.")
+                _speak_button(msg["content"], f"msg_{i}")
+
+    if question := st.chat_input("Ask a follow-up question about this location…"):
+        st.session_state.chat_history.append({"role": "user", "content": question})
+
+        headers = {"X-API-Key": api_key} if api_key else {}
+        with st.spinner("Thinking…"):
+            try:
+                r = httpx.post(
+                    f"{api_url.rstrip('/')}/api/v1/agent/followup",
+                    json={
+                        "session_id": st.session_state.session_id,
+                        "question": question,
+                        "persona": persona,
+                    },
+                    headers=headers,
+                    timeout=30,
+                )
+                r.raise_for_status()
+                resp_data = r.json()
+                answer = resp_data["answer"]
+                detected_intent = resp_data.get("intent")
+            except Exception as e:
+                answer = f"Error: {e}"
+                detected_intent = None
+
+        msg_meta = {}
+        if detected_intent:
+            msg_meta["intent"] = detected_intent
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": answer, **msg_meta}
+        )
+        st.rerun()
 
 else:
     # No analysis yet — show landmark map
