@@ -1,59 +1,79 @@
 # Spatial Context Agent
 
-A location-aware AI backend for spatial tour guide experiences.
+An autonomous AI tour guide for cultural and heritage sites — point your phone at any landmark and get a real-time, persona-driven narration with conversational follow-ups.
 
-![CI/CD](https://github.com/Rithub14/spatial-context-agent/actions/workflows/ci-cd.yml/badge.svg)
+![CI](https://github.com/Rithub14/spatial-context-agent/actions/workflows/ci-cd.yml/badge.svg)
+
+---
+
+## What it does
+
+A tourist photographs the Brandenburg Gate. The system extracts GPS from the photo's EXIF metadata, classifies the scene with CLIP, finds the nearest landmark in its knowledge base, retrieves contextual facts via RAG, and streams a narration through GPT-4o-mini — all in one API call. The user can then ask follow-up questions in natural language; the agent detects intent, queries live web results when needed, and responds in character.
+
+**Core loop:**
+
+```
+Photo → EXIF GPS → CLIP scene → nearest landmark → RAG context → GPT narration (streamed)
+                                                                       ↓
+                                              follow-up chat with intent detection + web search
+```
 
 ---
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    Client["Client\n(Streamlit / API)"]
-    Func["Azure Function\n(HTTP Gateway)"]
-    API["FastAPI\n(Azure Container Instance)"]
-    CLIP["CLIP Model\nViT-B/32"]
-    EXIF["EXIF Extractor"]
-    DB["PostgreSQL\n(Landmarks DB)"]
-    Narr["Narration Engine"]
-    Resp["JSON Response\n{scene, location,\nnarration, metadata}"]
-
-    Client --> Func --> API
-    API --> EXIF
-    API --> CLIP
-    API --> DB
-    API --> Narr
-    Narr --> Resp
-    CLIP --> Narr
-    DB --> Narr
 ```
-
----
-
-## The Problem
-
-AR tour guides and spatial storytelling platforms need an AI brain that can answer: *"What am I looking at, and where am I?"* A tourist points their phone at the Brandenburg Gate — the system must classify the scene, match it to a known landmark, and narrate historical context in real time, without requiring the user to search or type anything.
-
-This project is that brain: a production-grade REST API that combines zero-shot computer vision (CLIP) with geospatial context retrieval (Haversine + PostgreSQL) to generate contextual tour guide narrations from a single photo.
+┌─────────────────────────────────────────────────────────────────┐
+│                        Streamlit UI                             │
+│   Upload photo  ──►  SSE stream narration  ──►  Chat follow-ups │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ HTTP
+┌────────────────────────────▼────────────────────────────────────┐
+│                     FastAPI  (port 8001)                        │
+│                                                                 │
+│  POST /agent/stream          POST /agent/followup               │
+│         │                           │                           │
+│  ┌──────▼──────────────────┐  ┌─────▼──────────────────────┐   │
+│  │    LangGraph Pipeline   │  │   Intent Detector          │   │
+│  │  vision → context →     │  │   keyword + GPT-4o-mini    │   │
+│  │  narration (streamed)   │  │   routing to tools         │   │
+│  └──────┬──────────────────┘  └─────┬──────────────────────┘   │
+│         │                           │                           │
+│  ┌──────▼────────┐  ┌───────────────▼──────────────────────┐   │
+│  │  CLIP ViT-B/32│  │  Tools                               │   │
+│  │  scene class. │  │  • RAG retriever (pgvector)          │   │
+│  └───────────────┘  │  • Foursquare reverse geocoder       │   │
+│                     │  • DuckDuckGo web search (live)      │   │
+│  ┌──────────────┐   │  • Nearby places (DB)                │   │
+│  │  PostgreSQL  │   └──────────────────────────────────────┘   │
+│  │  landmarks   │                                               │
+│  │  pgvector    │   Session memory (DB-backed)                  │
+│  │  conv. turns │   Location context injected per request       │
+│  └──────────────┘                                               │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
 ## Tech Stack
 
-| Component | Technology |
+| Layer | Technology |
 |---|---|
 | Language | Python 3.11 |
-| Vision model | OpenAI CLIP (ViT-B/32) via PyTorch |
-| API framework | FastAPI + Uvicorn |
-| Database | PostgreSQL 16 (SQLAlchemy ORM) |
-| Containerisation | Docker (multi-stage build) |
-| Local dev | docker-compose |
-| Cloud | Azure (Container Instances, Functions, Container Registry, PostgreSQL Flexible Server) |
-| IaC | Terraform (Azure provider) |
-| CI/CD | GitHub Actions (test → build → deploy) |
-| Demo UI | Streamlit |
-| Testing | pytest + httpx TestClient |
+| Vision | OpenAI CLIP (ViT-B/32) via PyTorch — zero-shot scene classification |
+| Orchestration | LangGraph `StateGraph` — vision → context → narration nodes |
+| LLM | GPT-4o-mini via LangChain (`langchain-openai`) |
+| RAG | pgvector + `sentence-transformers` (`all-MiniLM-L6-v2`) |
+| Geolocation | EXIF GPS extraction + Foursquare Places API v3 |
+| Web search | DuckDuckGo (`duckduckgo-search`) — live results, no API key |
+| API | FastAPI + Uvicorn, SSE via `StreamingResponse` |
+| Database | PostgreSQL 16 + pgvector extension |
+| ORM | SQLAlchemy 2.0 with `Mapped` / `mapped_column` |
+| Session memory | DB-backed (`UserSession` + `ConversationTurn` models) |
+| Containerisation | Docker multi-stage build + docker-compose |
+| CI | GitHub Actions — ruff lint + 84 pytest tests on every push |
+| Demo UI | Streamlit with live SSE token streaming |
+| Testing | pytest, SQLite `StaticPool`, all CLIP calls mocked |
 | Linting | Ruff |
 
 ---
@@ -61,89 +81,127 @@ This project is that brain: a production-grade REST API that combines zero-shot 
 ## Quick Start
 
 ```bash
-# 1. Clone and enter the project
+# 1. Clone
 git clone https://github.com/Rithub14/spatial-context-agent.git
 cd spatial-context-agent
 
-# 2. Start the API + database, then seed Berlin landmarks
+# 2. Copy env and fill in your keys
+cp .env.example .env
+# Required: OPENAI_API_KEY
+# Optional: FOURSQUARE_API_KEY (falls back to DB-only landmarks without it)
+
+# 3. Start API + PostgreSQL (pgvector image)
 docker-compose up --build -d
+
+# 4. Seed 18 Berlin landmarks
 docker-compose exec api python -m src.db.seed
 
-# 3. Test the API
-curl -X POST http://localhost:8000/api/v1/analyze \
-  -H "Content-Type: application/json" \
-  -d '{
-    "image": "'$(base64 -i your_photo.jpg)'",
-    "latitude": 52.5163,
-    "longitude": 13.3777
-  }'
+# 5. (Optional) Build the RAG knowledge base from Wikipedia
+docker-compose exec api python -m src.db.build_knowledge_base
 
-# 4. Launch the Streamlit demo UI
-pip install -r requirements-streamlit.txt
+# 6. Launch Streamlit
+pip install streamlit httpx pandas Pillow
 streamlit run streamlit_app/app.py
+```
+
+Or run the API locally without Docker:
+
+```bash
+uv venv && uv pip install -r requirements.txt
+uvicorn src.api.main:app --port 8001 --reload
 ```
 
 ---
 
-## API Documentation
+## API Endpoints
 
-### `POST /api/v1/analyze`
+### `POST /api/v1/agent/stream` — main endpoint (SSE)
 
-Classify a scene, find the nearest landmark, and generate a tour guide narration.
+Runs the full LangGraph pipeline and streams narration token-by-token.
 
 **Request**
 ```json
 {
-  "image": "<base64-encoded JPEG or PNG>",
+  "image": "<base64 JPEG/PNG>",
   "latitude": 52.5163,
   "longitude": 13.3777,
-  "max_narration_length": 200
+  "persona": "historian",
+  "session_id": null
 }
 ```
 `latitude` / `longitude` are optional if the image contains GPS EXIF metadata.
+`persona` options: `historian` · `storyteller` · `local` · `child_friendly`
+
+**SSE event stream**
+```
+data: {"type": "step",  "content": "👁️ Scene identified: monument (87% confidence)"}
+data: {"type": "step",  "content": "📍 Landmark found: Brandenburg Gate (42m away)"}
+data: {"type": "step",  "content": "📚 Retrieved knowledge context (1842 chars)"}
+data: {"type": "token", "content": "Standing before"}
+data: {"type": "token", "content": " the iconic"}
+...
+data: {"type": "done",  "session_id": "...", "scene": {...}, "location": {...}, "metadata": {...}}
+```
+
+---
+
+### `POST /api/v1/agent/followup` — conversational follow-ups
+
+```json
+{
+  "session_id": "abc123",
+  "question": "any exhibitions happening nearby?",
+  "persona": "historian"
+}
+```
 
 **Response**
 ```json
 {
-  "scene": {
-    "primary": "monument",
-    "confidence": 0.74,
-    "alternatives": [{"category": "historic building", "confidence": 0.12}]
-  },
-  "location": {
-    "nearest_landmark": "Brandenburg Gate",
-    "distance_meters": 42.3,
-    "district": "Mitte",
-    "city": "Berlin"
-  },
-  "narration": "I can see you're looking at a monument. You're standing before the iconic Brandenburg Gate...",
-  "metadata": {
-    "model_version": "ViT-B/32",
-    "inference_time_ms": 312,
-    "timestamp": "2024-01-15T10:30:00Z",
-    "coordinates": {"latitude": 52.5163, "longitude": 13.3777}
-  }
+  "session_id": "abc123",
+  "answer": "As of March 2026, the Pergamon Museum is...",
+  "intent": "current_events",
+  "intent_confidence": 1.0
 }
 ```
 
-### `GET /health`
+**Detected intents:**
 
-```json
-{
-  "status": "ok",
-  "model_loaded": true,
-  "db_connected": true,
-  "uptime_seconds": 142.7
-}
-```
+| Intent | Triggered by | Action |
+|---|---|---|
+| `nearby_places` | "what else is nearby?" | DB proximity search |
+| `historical_facts` | "when was it built?" | RAG knowledge retrieval |
+| `current_events` | "any exhibitions?" | Live DuckDuckGo web search |
+| `opening_hours` | "when does it open?" | LLM with advisory note |
+| `directions` | "how do I get there?" | LLM using last known GPS |
+| `translation` | "say that in German" | LLM |
+| `photo_tip` | "best angle for a photo?" | LLM |
+| `moved` | "I've moved" | Prompt to upload new photo |
+| `general` | anything else | LLM |
 
-### `GET /api/v1/locations?limit=20&offset=0`
+The user's GPS coordinates from their last uploaded photo are injected into every follow-up so distance questions ("how far is X?") are answered relative to their actual location.
+
+Today's date is always injected so the LLM cannot hallucinate stale event information.
+
+---
+
+### `POST /api/v1/analyze` — non-streaming (legacy)
+
+Same pipeline as `/agent/stream` but returns a single JSON response. Useful for testing or non-streaming clients.
+
+### `GET /api/v1/locations`
 
 Paginated list of all landmarks in the database.
 
 ### `POST /api/v1/locations`
 
-Add a new landmark (requires `X-API-Key` header when `ENABLE_AUTH=true`).
+Add a landmark (requires `X-API-Key` header when `ENABLE_AUTH=true`).
+
+### `GET /health`
+
+```json
+{"status": "ok", "model_loaded": true, "db_connected": true, "uptime_seconds": 142.7}
+```
 
 ---
 
@@ -153,102 +211,124 @@ Add a new landmark (requires `X-API-Key` header when `ENABLE_AUTH=true`).
 spatial-context-agent/
 ├── src/
 │   ├── api/
-│   │   ├── main.py                 # FastAPI app, lifespan, middleware wiring
+│   │   ├── main.py                  # FastAPI app, lifespan, middleware wiring
 │   │   ├── routes/
-│   │   │   ├── agent.py            # POST /api/v1/analyze, GET+POST /locations
-│   │   │   └── health.py           # GET /health
+│   │   │   ├── agent.py             # All agent endpoints + intent routing helpers
+│   │   │   └── health.py            # GET /health
 │   │   ├── middleware/
-│   │   │   ├── auth.py             # API key validation (toggleable)
-│   │   │   └── rate_limiter.py     # Per-IP sliding window (toggleable)
+│   │   │   ├── auth.py              # API key validation (toggleable)
+│   │   │   └── rate_limiter.py      # Per-IP sliding window (toggleable)
 │   │   └── schemas/
-│   │       ├── request.py          # AnalyzeRequest, LandmarkCreateRequest
-│   │       └── response.py         # AnalyzeResponse, HealthResponse, etc.
+│   │       ├── request.py           # Pydantic request models
+│   │       └── response.py          # Pydantic response models
+│   ├── agent/
+│   │   ├── graph.py                 # LangGraph StateGraph (vision→context→narration)
+│   │   ├── tools.py                 # LangChain @tool wrappers for pipeline components
+│   │   └── memory.py                # DB-backed session memory (UserSession, ConversationTurn)
 │   ├── pipeline/
-│   │   ├── clip_inference.py       # CLIP model loading + inference
-│   │   ├── scene_classifier.py     # Zero-shot classification (12 categories)
-│   │   ├── location_extractor.py   # EXIF GPS extraction
-│   │   ├── context_retriever.py    # Haversine nearest-landmark lookup
-│   │   └── narration_engine.py     # Template-based tour guide narration
+│   │   ├── clip_inference.py        # CLIP model loading + logit-scaled inference
+│   │   ├── scene_classifier.py      # Zero-shot classification (12 categories)
+│   │   ├── location_extractor.py    # EXIF GPS extraction (IFDRational-safe)
+│   │   ├── context_retriever.py     # Haversine nearest-landmark lookup
+│   │   ├── narration_engine.py      # GPT-4o-mini narration + template fallback
+│   │   ├── embedder.py              # sentence-transformers singleton
+│   │   ├── rag_retriever.py         # pgvector cosine similarity retrieval
+│   │   └── intent_detector.py       # Intent classification (LLM + keyword fallback)
 │   ├── db/
-│   │   ├── models.py               # SQLAlchemy ORM (landmarks, inference_logs)
-│   │   ├── seed.py                 # 18 real Berlin landmarks
-│   │   └── session.py              # Engine, SessionLocal, get_db dependency
-│   └── config.py                   # pydantic-settings (all config from env)
-├── tests/                          # 62 tests, all passing
-├── terraform/                      # Azure IaC (ACR, PostgreSQL, ACI, Function)
-├── azure_function/                 # HTTP gateway (Python v2 model)
-├── streamlit_app/                  # Demo dashboard
+│   │   ├── models.py                # Landmark, InferenceLog, LandmarkChunk,
+│   │   │                            # UserSession, ConversationTurn
+│   │   ├── seed.py                  # 18 Berlin landmarks with GPS + narration templates
+│   │   ├── build_knowledge_base.py  # Embeds DB text + Wikipedia into pgvector
+│   │   └── session.py               # Engine, SessionLocal, get_db
+│   └── config.py                    # pydantic-settings (all config from env vars)
+├── tests/                           # 84 tests — CLIP always mocked, SQLite StaticPool
+├── streamlit_app/
+│   └── app.py                       # Streamlit demo: SSE streaming + chat interface
 ├── scripts/
-│   └── smoke_test.py               # Post-deploy smoke test (CI-safe)
-├── Dockerfile                      # Multi-stage production build
-└── docker-compose.yml              # Local dev (FastAPI + PostgreSQL)
+│   └── smoke_test.py                # Manual health + analyze + locations check
+├── docker/
+│   └── init-pgvector.sql            # CREATE EXTENSION vector (runs on DB init)
+├── .github/workflows/
+│   └── ci-cd.yml                    # CI: ruff + pytest on every push/PR
+├── Dockerfile                       # Multi-stage: builder (gcc, git) + runtime
+├── docker-compose.yml               # pgvector/pgvector:pg16 + FastAPI
+├── requirements.txt
+└── .env.example
 ```
 
 ---
 
-## Design Decisions
+## Key Design Decisions
 
-**Why CLIP for scene classification?**
-Zero-shot — no labelled training data or model retraining needed per city. Adding new landmark categories means updating a Python list, not retraining. Uses ViT-B/32 which balances accuracy and CPU inference speed (~300 ms per image).
+**CLIP for zero-shot scene classification**
+No labelled training data or model retraining needed per city. New landmark categories = update a Python list. ViT-B/32 balances accuracy (~87% on landmark scenes) and CPU inference speed (~300 ms).
 
-**Why template-based narration?**
-No LLM dependency in the critical path means zero latency variance, no API costs, and 100% offline capability. DB templates are authored by humans so quality is consistent. LLM-powered narration (LangChain + GPT-4) is a documented next step.
+**LangGraph for orchestration**
+Three-node `StateGraph` (vision → context → narration) gives a clear audit trail via `step_trace`, makes each stage independently testable, and mirrors the autonomous agent pattern used in production spatial platforms.
 
-**Why EXIF GPS extraction?**
-Tourists already have GPS metadata in every smartphone photo. Auto-extracting it removes friction — no manual coordinate entry needed. Explicit lat/lng is the fallback for images without EXIF.
+**pgvector RAG over a pure LLM approach**
+Wikipedia summaries and DB descriptions are chunked, embedded with `all-MiniLM-L6-v2`, and stored as 384-dim vectors. Cosine similarity retrieval grounds the narration in factual content, reducing hallucinations without expensive fine-tuning.
 
-**Why toggleable auth + rate limiting?**
-Demonstrates security awareness without making local development painful. `ENABLE_AUTH=false` + `ENABLE_RATE_LIMIT=false` for dev/test, flip to `true` in production via env vars — no code changes.
+**Intent detection before every follow-up**
+Classifying the user's question first (8 intents) lets the system call the right tool — web search for current events, RAG for history, DB proximity for nearby places — rather than throwing everything at the LLM and hoping.
 
-**Why Azure?**
-Closest region to Berlin is `westeurope`. Container Instances for the stateful API (model loaded in memory), Functions for the serverless gateway (scales to zero), PostgreSQL Flexible Server for the landmark DB.
+**DuckDuckGo for live web search**
+Zero cost, no API key, no rate-limit account required. Today's date is always injected into the system prompt so the LLM cannot answer "any exhibitions?" with stale 2023 training data.
 
----
+**SSE streaming over a single JSON response**
+Step trace events appear as each node completes (giving the user visual feedback that the agent is working), then narration tokens stream in character-by-character. This matches the real-time feel of production spatial agents.
 
-## Infrastructure
+**GPS from EXIF, not typed input**
+Every smartphone photo already has GPS metadata. Auto-extraction removes friction for the tourist use case. Explicit lat/lng is the fallback; the last-known GPS from an uploaded photo is reused for all follow-up distance/direction questions.
 
-All Azure resources are defined in `terraform/` and provisioned with:
-
-```bash
-cd terraform
-terraform init
-terraform apply \
-  -var="container_image=<acr>.azurecr.io/spatial-agent:latest" \
-  -var="db_admin_password=<secret>"
-```
-
-Resources created: Resource Group → ACR (Basic) → PostgreSQL Flexible Server (B1ms) → Container Instance (1 vCPU / 1.5 GB) → Storage Account → Function App (consumption Y1).
-
-The CI/CD pipeline (`ci-cd.yml`) handles automated deployments on every merge to `main`. See the required secrets documented at the top of `.github/workflows/ci-cd.yml`.
+**Toggleable auth + rate limiting**
+`ENABLE_AUTH=false` + `ENABLE_RATE_LIMIT=false` for local dev, flip to `true` in production via env vars — no code changes needed.
 
 ---
 
 ## Testing
 
 ```bash
-# Run all 62 tests
+# Run all 84 tests
 PYTHONPATH=. pytest tests/ -v
 
-# With coverage report
+# With coverage
 PYTHONPATH=. pytest --cov=src --cov-report=term-missing tests/
 
 # Smoke test against a running instance
-python scripts/smoke_test.py --url http://localhost:8000
+python scripts/smoke_test.py --url http://localhost:8001
 ```
 
-Test coverage targets >80%. CLIP model is always mocked in tests (slow to load). SQLite in-memory with `StaticPool` is used as the test database.
+CLIP is always mocked (slow to load). The test database uses SQLite in-memory with `StaticPool` so all connections share one instance. pgvector tests are skipped in SQLite mode.
 
 ---
 
-## What I'd Improve With More Time
+## Environment Variables
 
-- **Fine-tuned CLIP** on a landmark-specific dataset for higher classification accuracy on architectural features
-- **LLM-powered narration** via LangChain + GPT-4 for richer, dynamic, multi-language responses
-- **Edge model distillation** — compress CLIP to run on-device for offline AR inference
-- **Monitoring** with Prometheus metrics + Grafana dashboard (inference latency, landmark hit rate)
-- **Multi-language support** — narration templates in DE/FR/ES, language detection from `Accept-Language` header
-- **User feedback loop** — thumbs up/down on narrations feeds back to improve template quality
-- **Model A/B testing** framework to compare CLIP variants (ViT-B/16, ViT-L/14) on real traffic
+```bash
+# Database
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/spatial_agent
+
+# Model
+CLIP_MODEL_NAME=ViT-B/32
+DEVICE=cpu
+
+# API
+API_HOST=0.0.0.0
+API_PORT=8000
+
+# Security (toggleable)
+ENABLE_AUTH=false
+ENABLE_RATE_LIMIT=false
+API_KEY=dev-key-change-in-production
+RATE_LIMIT_RPM=60
+
+# Agentic system (required for LLM narration, intent detection, web search)
+OPENAI_API_KEY=sk-...
+
+# Foursquare (optional — enables worldwide reverse geocoding)
+FOURSQUARE_API_KEY=...
+```
 
 ---
 
