@@ -30,8 +30,6 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_analysis" not in st.session_state:
     st.session_state.last_analysis = None
-if "audio_cache" not in st.session_state:
-    st.session_state.audio_cache = {}  # key → MP3 bytes
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -59,7 +57,6 @@ with st.sidebar:
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.chat_history = []
         st.session_state.last_analysis = None
-        st.session_state.audio_cache = {}
         st.rerun()
 
     if st.session_state.session_id:
@@ -278,24 +275,6 @@ if st.session_state.last_analysis:
         "current_events": "🎭", "general": "💬",
     }
 
-    def _speak_button(text: str, cache_key: str) -> None:
-        """Render a 🔊 button that fetches TTS audio and caches it."""
-        if st.button("🔊", key=f"btn_{cache_key}", help="Listen to this response"):
-            with st.spinner("Generating audio…"):
-                try:
-                    r = httpx.post(
-                        f"{api_url.rstrip('/')}/api/v1/agent/speak",
-                        json={"text": text, "language": "en"},
-                        headers={"X-API-Key": api_key} if api_key else {},
-                        timeout=30,
-                    )
-                    r.raise_for_status()
-                    st.session_state.audio_cache[cache_key] = r.content
-                except Exception as e:
-                    st.error(f"Audio failed: {e}")
-        if st.session_state.audio_cache.get(cache_key):
-            st.audio(st.session_state.audio_cache[cache_key], format="audio/mp3")
-
     for i, msg in enumerate(st.session_state.chat_history):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -306,7 +285,6 @@ if st.session_state.last_analysis:
                     st.caption(f"{icon} Intent: `{intent}`")
                 if intent == "moved":
                     st.info("Upload a new photo above and click **Analyze** to update your location.")
-                _speak_button(msg["content"], f"msg_{i}")
 
     if question := st.chat_input("Ask a follow-up question about this location…"):
         st.session_state.chat_history.append({"role": "user", "content": question})
