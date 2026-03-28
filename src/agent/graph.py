@@ -142,7 +142,7 @@ def narration_node(state: AgentState) -> dict[str, Any]:
         llm = ChatOpenAI(
             model=settings.gpt_model,
             api_key=settings.openai_api_key,
-            max_tokens=300,
+            max_tokens=500,
         )
         response = llm.invoke(messages)
         narration = response.content
@@ -158,10 +158,6 @@ def narration_node(state: AgentState) -> dict[str, Any]:
 
     return {"narration": narration, "step_trace": trace}
 
-
-def _should_fetch_knowledge(state: AgentState) -> str:
-    """Route: skip knowledge retrieval if no landmark was found."""
-    return "context" if True else "narration"
 
 
 # ---------------------------------------------------------------------------

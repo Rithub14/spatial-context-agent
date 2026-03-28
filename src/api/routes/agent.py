@@ -283,7 +283,7 @@ def agent_stream(
             llm = ChatOpenAI(
                 model=settings.gpt_model,
                 api_key=settings.openai_api_key,
-                max_tokens=300,
+                max_tokens=500,
                 streaming=True,
             )
             for chunk in llm.stream(messages):
@@ -459,7 +459,7 @@ def agent_followup(
 
     if settings.openai_api_key:
         llm = ChatOpenAI(model=settings.gpt_model, api_key=settings.openai_api_key,
-                         max_tokens=300)
+                         max_tokens=800)
         answer = llm.invoke(messages).content
     else:
         answer = "OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file."
