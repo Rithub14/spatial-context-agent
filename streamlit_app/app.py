@@ -8,7 +8,7 @@ import uuid
 import httpx
 import pandas as pd
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -93,7 +93,7 @@ if uploaded_file:
     col_img, col_meta = st.columns([1, 1])
 
     with col_img:
-        st.image(image, caption="Uploaded image", use_column_width=True)
+        st.image(ImageOps.exif_transpose(image), caption="Uploaded image", use_column_width=True)
 
     # Try to extract EXIF GPS
     exif_lat, exif_lng = None, None
