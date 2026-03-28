@@ -25,10 +25,6 @@ class Settings(BaseSettings):
     api_key: str = "dev-key-change-in-production"
     rate_limit_rpm: int = 60
 
-    # Azure deployment
-    azure_resource_group: str = "spatial-agent-rg"
-    azure_location: str = "westeurope"
-
     # Agentic system
     openai_api_key: str = ""
     gpt_model: str = "gpt-4o-mini"
